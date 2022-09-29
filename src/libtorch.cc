@@ -25,8 +25,13 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdint.h>
+
 #include <exception>
+
+#include "dag_node.h"
+#include "libtorch_flow.h"
 #include "libtorch_utils.h"
+#include "memory_manager.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
 #include "triton/backend/backend_memory.h"
@@ -104,6 +109,8 @@ class ModelState : public BackendModel {
   bool EnabledWeightSharing() { return enable_weight_sharing_; }
   const std::vector<std::string>& ModelOutputs() { return output_names_; }
 
+  DAGNodePtr GetDAGNode() const { return dag_node_; }
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -145,6 +152,8 @@ class ModelState : public BackendModel {
   // List of all the outputs specified in the output section of model
   // configuration.
   std::vector<std::string> output_names_;
+
+  DAGNodePtr dag_node_;
 };
 
 TRITONSERVER_Error*
@@ -217,6 +226,7 @@ ModelState::LoadModel(
   *model_path = JoinPath(
       {RepositoryPath(), std::to_string(Version()), cc_model_filename});
 
+  // Check if the model exist in repository
   {
     bool exists;
     RETURN_IF_ERROR(FileExists(*model_path, &exists));
@@ -226,52 +236,88 @@ ModelState::LoadModel(
             "' for model instance '" + Name() + "'");
   }
 
-  // If weight sharing is enabled, skip loading model if
-  // it is already available on the target device
-  std::pair<bool, int> device_pair;
-  if (enable_weight_sharing_) {
-    device_pair = std::make_pair(!device.is_cpu(), device.index());
-    auto mit = torch_models_.find(device_pair);
-    if (mit != torch_models_.end()) {
-      *torch_model = mit->second;
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_INFO,
-          (std::string("Reusing TorchScript model for instance '") + Name() +
-           "'")
-              .c_str());
-      return nullptr;  // success
-    }
-  }
-
-  // Serialize the torch model to string
-  std::string model_data_str;
-  RETURN_IF_ERROR(ReadTextFile(*model_path, &model_data_str));
-
   // InferenceMode should be used to guard all tensors operations including
   // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
   torch::InferenceMode infer_guard(EnabledInferenceMode());
 
-  try {
-    std::istringstream model_stream(model_data_str);
-    torch_model->reset(
-        new torch::jit::Module(torch::jit::load(model_stream, device)));
-  }
-  catch (const std::exception& ex) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("failed to load model '" + Name() + "': " + ex.what()).c_str());
-  }
+  // Create a new torch model as DAG node
+  DAGNodePtr node = dag_node_ =
+      std::make_shared<DAGNode>(*model_path, Name(), Version());
+  // Allocate Memory on Management Memory Pool
+  GET_INSTANCE(DAGMemoryManager)
+      ->AllocateMemory(
+          node->GetNodeID(), node, node->GetNodeByteSize(), DeviceType::CPU,
+          -1);
 
-  if (enable_weight_sharing_) {
-    if (!((torch_models_.emplace(device_pair, *torch_model)).second)) {
-      std::string type = device.is_cpu() ? "CPU" : "GPU";
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_WARN,
-          (std::string("Model already found on target ") + type + " device " +
-           "(id " + std::to_string(device.index()) + ") for '" + Name() + "'")
-              .c_str());
-    }
-  }
+  *torch_model = node->GetModelMeta()->GetModel();
+
+  // RETURN_IF_ERROR(
+  //     GET_INSTANCE(LibTorchPool)->RegisterModule(*model_path, Name(),
+  //     Version()));
+
+  // // If the model is not already loaded, load it.
+  // auto start_time = std::chrono::steady_clock::now();
+  // RETURN_IF_ERROR(GET_INSTANCE(LibTorchPool)->FetchModule(Name(), Version(),
+  // device)); auto end_time = std::chrono::steady_clock::now(); LOG_MESSAGE(
+  //     TRITONSERVER_LOG_VERBOSE,
+  //     (std::string("TorchScript model load time: ") +
+  //      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+  //                         end_time - start_time)
+  //                         .count()) +
+  //      " usec")
+  //         .c_str());
+
+
+  // *torch_model = GET_INSTANCE(LibTorchPool)->GetModule(Name(), Version());
+  TRITONSERVER_Message* model_config_message;
+  RETURN_IF_ERROR(TRITONBACKEND_ModelConfig(
+      triton_model_, 1 /* config_version */, &model_config_message));
+
+  //
+  // // If weight sharing is enabled, skip loading model if
+  // // it is already available on the target device
+  // std::pair<bool, int> device_pair;
+  // if (enable_weight_sharing_) {
+  //   device_pair = std::make_pair(!device.is_cpu(), device.index());
+  //   auto mit = torch_models_.find(device_pair);
+  //   if (mit != torch_models_.end()) {
+  //     *torch_model = mit->second;
+  //     LOG_MESSAGE(
+  //         TRITONSERVER_LOG_INFO,
+  //         (std::string("Reusing TorchScript model for instance '") + Name() +
+  //          "'")
+  //             .c_str());
+  //     return nullptr;  // success
+  //   }
+  // }
+
+  // // Serialize the torch model to string
+  // std::string model_data_str;
+  // RETURN_IF_ERROR(ReadTextFile(*model_path, &model_data_str));
+
+  // try {
+  //   std::istringstream model_stream(model_data_str);
+  //   torch_model->reset(
+  //       new torch::jit::Module(torch::jit::load(model_stream, device)));
+  // }
+  // catch (const std::exception& ex) {
+  //   return TRITONSERVER_ErrorNew(
+  //       TRITONSERVER_ERROR_INTERNAL,
+  //       ("failed to load model '" + Name() + "': " + ex.what()).c_str());
+  // }
+
+  // if (enable_weight_sharing_) {
+  //   if (!((torch_models_.emplace(device_pair, *torch_model)).second)) {
+  //     std::string type = device.is_cpu() ? "CPU" : "GPU";
+  //     LOG_MESSAGE(
+  //         TRITONSERVER_LOG_WARN,
+  //         (std::string("Model already found on target ") + type + " device "
+  //         +
+  //          "(id " + std::to_string(device.index()) + ") for '" + Name() +
+  //          "'")
+  //             .c_str());
+  //   }
+  // }
 
   return nullptr;  // success
 }
@@ -557,6 +603,8 @@ class ModelInstanceState : public BackendModelInstance {
   cudaEvent_t compute_input_start_event_;
   cudaEvent_t compute_infer_start_event_;
   cudaEvent_t compute_output_start_event_;
+
+  std::thread memory_thread_;
 };
 
 TRITONSERVER_Error*
@@ -573,6 +621,9 @@ ModelInstanceState::Create(
         std::string("unexpected nullptr in BackendModelInstanceException"));
     RETURN_IF_ERROR(ex.err_);
   }
+
+  // Create a new thread to call memory manager for allocation and release
+
 
   return nullptr;  // success
 }
@@ -995,10 +1046,36 @@ ModelInstanceState::ProcessRequests(
        std::to_string(request_count) + " requests")
           .c_str());
 
+
+  // Record all request to ModelFlowRecoder
+  for (uint32_t i = 0; i < request_count; ++i) {
+    GET_INSTANCE(ModelFlowRecorder)
+        ->RecordModelFlow(
+            GetRequestId(requests[i]),
+            model_state_->GetDAGNode()->GetModelMeta());
+  }
+
+  // Assumes always using GPU for now
+  // We need to set the device to the one that the model is on
+
+  // Always allocate memory for the model
+  // If the model is already loaded, some time will be wasted on table lookup
+
+  // FIXME: HARD CODED gpu id 0
+  GET_INSTANCE(DAGMemoryManager)
+      ->AllocateMemory(
+          model_state_->GetDAGNode()->GetNodeID(), model_state_->GetDAGNode(),
+          model_state_->GetDAGNode()->GetNodeByteSize(), DeviceType::GPU, 0);
+  cudaSetDevice(0);
+
+  // Start Prefetch async
+  GET_INSTANCE(ModelFlowRecorder)
+      ->GetTreeProbability(model_state_->GetDAGNode()->GetNodeID());
+
   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
 #ifdef TRITON_ENABLE_GPU
     at::cuda::CUDAStream torch_stream =
-        at::cuda::getStreamFromExternal(stream_, DeviceId());
+        at::cuda::getStreamFromExternal(stream_, 0);
     at::cuda::setCurrentCUDAStream(torch_stream);
 #endif
   }
@@ -1267,6 +1344,12 @@ ModelInstanceState::ProcessRequests(
             compute_start_ns, compute_end_ns, exec_end_ns),
         "failed reporting batch request statistics");
   }
+
+  // release the model immedietly after the inference is done
+  GET_INSTANCE(DAGMemoryManager)
+      ->ReleaseMemory(
+          model_state_->GetDAGNode()->GetNodeID(),
+          model_state_->GetDAGNode()->GetNodeByteSize());
 }
 
 void
@@ -1755,8 +1838,8 @@ ModelInstanceState::SetInputTensors(
     // The input must be in contiguous CPU/GPU memory.
     std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
     if (device_.is_cpu()) {
-      alloc_perference = {{TRITONSERVER_MEMORY_CPU_PINNED, 0},
-                          {TRITONSERVER_MEMORY_CPU, 0}};
+      alloc_perference = {
+          {TRITONSERVER_MEMORY_CPU_PINNED, 0}, {TRITONSERVER_MEMORY_CPU, 0}};
     } else {
       alloc_perference = {{TRITONSERVER_MEMORY_GPU, device_.index()}};
     }

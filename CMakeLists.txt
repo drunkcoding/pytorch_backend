@@ -256,6 +256,18 @@ add_library(
   src/libtorch.cc
   src/libtorch_utils.cc
   src/libtorch_utils.h
+  # src/libtorch_pool.cc
+  # src/libtorch_pool.h
+  src/libtorch_flow.cc
+  src/libtorch_flow.h
+  src/libtorch_stats.cc
+  src/libtorch_stats.h
+  src/lru_cache.h
+  src/model_meta.h
+  src/memory_manager.h
+  src/dag_node.h
+  src/dag_node.cc
+  src/event_loop.h
 )
 
 add_library(
