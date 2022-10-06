@@ -1,11 +1,16 @@
 #pragma once
 
+#include <boost/preprocessor.hpp>
+#include <string>
+
 #define FACTORY_STATIC_GET_INSTANCE(CLASSNAME) \
   static CLASSNAME* GetInstance()              \
   {                                            \
     static CLASSNAME instance;                 \
     return &instance;                          \
   }
+
+
 
 #define DISABLE_COPY_AND_ASSIGN(CLASSNAME) \
   CLASSNAME(const CLASSNAME&) = delete;    \

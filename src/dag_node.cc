@@ -1,12 +1,36 @@
 #include "dag_node.h"
 
+#include "libtorch_flow.h"
+
+namespace triton { namespace backend { namespace pytorch {
+
+
+void
+DAGNode::SetDevice(const torch::Device& device)
+{
+  torch::InferenceMode infer_guard(true);
+  device_ = device;
+  // In our context, lazy device stays on disk
+  if (device == DISK_DEVICE) {
+    delete model_;
+    model_ = nullptr;
+    return;
+  }
+  if (model_ == nullptr) {
+    // InferenceMode should be used to guard all tensors operations including
+    // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
+    model_ = new ScriptModule(torch::jit::load(model_path_, device));
+    // model_.reset(new Module(torch::jit::load(model_path_, device)));
+  } else
+    model_->to(device);
+}
 
 NodeMetaPtr
 DAGNode::AddPrevNode(const DAGNodePtr& node)
 {
   NodeMetaPtr prev_node = std::make_shared<NodeMeta>();
   prev_node->node_ptr = node;
-  auto result = prev_nodes_.insert({node->GetModelMeta()->GetID(), prev_node});
+  auto result = prev_nodes_.insert({node->GetNodeID(), prev_node});
   return result.first->second;
 }
 
@@ -16,7 +40,7 @@ DAGNode::AddNextNode(const DAGNodePtr& node)
 {
   NodeMetaPtr next_node = std::make_shared<NodeMeta>();
   next_node->node_ptr = node;
-  auto result = next_nodes_.insert({node->GetModelMeta()->GetID(), next_node});
+  auto result = next_nodes_.insert({node->GetNodeID(), next_node});
   if (!result.second) {
     result.first->second->visit_cnt++;
   }
@@ -38,3 +62,12 @@ DAGNode::RemoveNextNode(const std::size_t& model_id)
   }
   return it->second;
 }
+
+void
+DAGNode::RecordMyself(const std::string& request_id)
+{
+  GET_INSTANCE(ModelFlowRecorder)
+      ->RecordModelFlow(request_id, std::shared_ptr<DAGNode>(this));
+}
+
+}}}  // namespace triton::backend::pytorch

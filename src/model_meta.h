@@ -1,5 +1,5 @@
 #pragma once
-
+#if 0
 #include <torch/script.h>  // One-stop header for TorchScript
 
 #include <condition_variable>
@@ -7,9 +7,6 @@
 #include <mutex>
 
 #include "libtorch_common.h"
-
-typedef torch::jit::Module Module;
-typedef std::shared_ptr<Module> LibTorchModulePtr;
 
 class ModelMeta {
  public:
@@ -43,6 +40,8 @@ class ModelMeta {
   LibTorchModulePtr& GetModel() { return model_; }
   std::uint64_t GetID() const noexcept { return model_id_; }
 
+  void SetDevice(const torch::Device& device) noexcept { model_->to(device); }
+
   void SetDevice(const DeviceType& device, const int& device_id) noexcept
   {
     if (device == DeviceType::DISK) {
@@ -69,7 +68,7 @@ class ModelMeta {
   }
 
   // return model_bytes_size
-  const std::size_t GetByteSize() const noexcept { return model_byte_size_; }
+  std::size_t GetByteSize() const noexcept { return model_byte_size_; }
 
  private:
   std::size_t model_byte_size_;
@@ -78,9 +77,11 @@ class ModelMeta {
   std::uint64_t model_version_;
   std::string model_path_;
   LibTorchModulePtr model_;
-  std::condition_variable cv_;
-  std::mutex mutex_;
-  // at::cuda::CUDAStream cuda_stream_; // Stream for GPU execution and memory transfer
+  // std::condition_variable cv_;
+  // std::mutex mutex_;
+  // at::cuda::CUDAStream cuda_stream_; // Stream for GPU execution and memory
+  // transfer
 };
 
 typedef std::shared_ptr<ModelMeta> ModelMetaPtr;
+#endif

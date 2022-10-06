@@ -12,7 +12,7 @@
 
 #include "libtorch_factory.h"
 #include "lru_cache.h"
-#include "model_meta.h"
+// #include "model_meta.h"
 #include "triton/core/tritonbackend.h"
 
 

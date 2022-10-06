@@ -108,7 +108,20 @@ FetchContent_Declare(
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON
 )
-FetchContent_MakeAvailable(repo-common repo-core repo-backend)
+FetchContent_Declare(
+  magic-enum
+  GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
+  GIT_SHALLOW ON
+)
+
+# FetchContent_GetProperties(magic_enum)
+# if (NOT magic_enum_POPULATED)
+#     FetchContent_Populate(magic_enum)
+#     add_subdirectory(${magic_enum_SOURCE_DIR} ${magic_enum_BINARY_DIR})
+#     include_directories(${magic_enum_SOURCE_DIR})
+# endif ()
+
+FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum)
 
 #
 # CUDA
@@ -256,18 +269,22 @@ add_library(
   src/libtorch.cc
   src/libtorch_utils.cc
   src/libtorch_utils.h
-  # src/libtorch_pool.cc
-  # src/libtorch_pool.h
+  src/dag_registry.h
+  src/dag_registry.cc
   src/libtorch_flow.cc
   src/libtorch_flow.h
   src/libtorch_stats.cc
   src/libtorch_stats.h
+  src/lru_cache.cc
   src/lru_cache.h
-  src/model_meta.h
+  src/model_state.h
+  src/model_state.cc
+  src/model_instance_state.h
+  src/model_instance_state.cc
+  src/memory_manager.cc
   src/memory_manager.h
   src/dag_node.h
   src/dag_node.cc
-  src/event_loop.h
 )
 
 add_library(
