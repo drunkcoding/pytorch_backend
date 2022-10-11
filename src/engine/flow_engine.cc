@@ -1,9 +1,21 @@
 #include "flow_engine.h"
 
-#include "flow_op.h"
-#include "utils/class_utils.h"
 #include "engine/libtorch_engine.h"
 #include "engine/libtorch_op.h"
+#include "flow_op.h"
+#include "utils/class_utils.h"
+
+
+FlowEngineHandle::FlowEngineHandle(EventLoop* loop)
+    : EngineHandleBase(loop)
+{
+  RegisterService();
+}
+
+void
+FlowEngineHandle::ThreadInit(EventLoop* loop)
+{
+}
 
 void
 FlowEngineHandle::RegisterService()

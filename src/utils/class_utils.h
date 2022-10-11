@@ -34,7 +34,7 @@
   virtual void Process();
 
 #define DEFAULT_LOOPHANDLE_MEMBER(ClassName)       \
-  ClassName(EventLoop* loop);                      \
+  explicit ClassName(EventLoop* loop);                      \
   static void ThreadInit(EventLoop* loop);         \
   static LoopHandle* CreateMyself(EventLoop* loop) \
   {                                                \

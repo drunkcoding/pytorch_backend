@@ -3,6 +3,17 @@
 // #include "backend_op_execute.h"
 #include "libtorch_engine.h"
 
+BackendEngineHandle::BackendEngineHandle(EventLoop* loop)
+    : EngineHandleBase(loop)
+{
+  RegisterService();
+}
+
+void
+BackendEngineHandle::ThreadInit(EventLoop* loop)
+{
+}
+
 void
 BackendEngineHandle::RegisterService()
 {
@@ -39,10 +50,10 @@ BackendEngineHandle::DispachRequest(const RequestPtr& request)
     default:
       break;
   }
-//   auto op_creator =
-//       op_registry_.GetOp(BackendOpTypeToString(backend_request->op_type));
-//   auto op = op_creator(loop_);
-//   op->SendRequest(backend_request);
+  //   auto op_creator =
+  //       op_registry_.GetOp(BackendOpTypeToString(backend_request->op_type));
+  //   auto op = op_creator(loop_);
+  //   op->SendRequest(backend_request);
 }
 
 void
@@ -68,8 +79,7 @@ BackendEngineHandle::LoadModel(const BackendRequestPtr& request)
 void
 BackendEngineHandle::UnloadModel(const BackendRequestPtr& request)
 {
-  auto unload_request =
-      std::static_pointer_cast<BackendUnloadRequest>(request);
+  auto unload_request = std::static_pointer_cast<BackendUnloadRequest>(request);
   unload_request->node->SetDevice(unload_request->target_device);
   // callback is needed to memory management to unblock load of other models.
 
@@ -77,7 +87,7 @@ BackendEngineHandle::UnloadModel(const BackendRequestPtr& request)
   unload_response->node = unload_request->node;
   unload_response->target_device = unload_request->target_device;
 
-  
+
   unload_request->cb(unload_response);
   // auto* loop = unload_request->handle->GetLoop();
   // loop->RunInLoop(std::bind(unload_request->cb, unload_response));

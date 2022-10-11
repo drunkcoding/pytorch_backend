@@ -3,13 +3,16 @@
 #include <functional>
 #include <memory>
 
-#include "utils/class_utils.h"
-#include "event/eventloop_thread.h"
 #include "base/noncopyable.h"
+#include "event/eventloop_thread.h"
 #include "op_base.h"
+#include "utils/class_utils.h"
 
 class EngineHandleBase : public LoopHandle {
  public:
+  explicit EngineHandleBase(EventLoop* loop) {
+    loop_ = loop;
+  }
   virtual void DispachRequest(const RequestPtr& request) = 0;
 
  protected:

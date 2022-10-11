@@ -428,6 +428,7 @@ target_link_libraries(
   triton-backend-utils # from repo-backend
   ${TRITON_PYTORCH_LDFLAGS}
   ${TRITON_PYTORCH_LIBS}
+  event
 )
 
 if(${TRITON_ENABLE_GPU})

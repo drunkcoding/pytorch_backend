@@ -5,6 +5,17 @@
 #include "dataflow/memory_controller.h"
 #include "libtorch_op.h"
 
+LibtorchEngineHandle::LibtorchEngineHandle(EventLoop* loop)
+    : EngineHandleBase(loop)
+{
+  RegisterService();
+}
+
+void
+LibtorchEngineHandle::ThreadInit(EventLoop* loop)
+{
+}
+
 void
 LibtorchEngineHandle::RegisterService()
 {
