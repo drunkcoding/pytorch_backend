@@ -1,6 +1,6 @@
 #include "model_state.h"
 
-#include "dag_registry.h"
+// #include "dataflow/dag_registry.h"
 #include "libtorch_utils.h"
 #include "triton/backend/backend_model_instance.h"
 
@@ -92,7 +92,7 @@ ModelState::LoadModel(
 
   // Create a new torch model as DAG node
   *node = std::make_shared<DAGNode>(*model_path, Name(), Version());
-  GET_INSTANCE(DAGRegistry)->AddNode((*node)->GetNodeID(), *node);
+  // GET_INSTANCE(DAGRegistry)->AddNode((*node)->GetNodeID(), *node);
   // // Allocate Memory on Management Memory Pool
   // auto request = std::make_shared<MemoryManageRequest>(
   //     node, CPU_DEVICE, ManageType::PREFETCH);

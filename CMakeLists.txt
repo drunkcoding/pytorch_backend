@@ -3,14 +3,14 @@
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
 # are met:
-#  * Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-#  * Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in the
-#    documentation and/or other materials provided with the distribution.
-#  * Neither the name of NVIDIA CORPORATION nor the names of its
-#    contributors may be used to endorse or promote products derived
-#    from this software without specific prior written permission.
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in the
+# documentation and/or other materials provided with the distribution.
+# * Neither the name of NVIDIA CORPORATION nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
 # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.18)
+cmake_minimum_required(VERSION 3.18)
 
 project(tritonpytorchbackend LANGUAGES C CXX)
 
@@ -33,15 +33,14 @@ project(tritonpytorchbackend LANGUAGES C CXX)
 #
 # To build the PyTorch backend you must either:
 #
-#   - Point to the already built PyTorch and Torchvision using
-#     TRITON_PYTORCH_INCLUDE_PATHS and TRITON_PYTORCH_LIB_PATHS
+# - Point to the already built PyTorch and Torchvision using
+# TRITON_PYTORCH_INCLUDE_PATHS and TRITON_PYTORCH_LIB_PATHS
 #
-#   or:
+# or:
 #
-#   - Set TRITON_PYTORCH_DOCKER_IMAGE to use the docker image of
-#     PyTorch to base the build off.
+# - Set TRITON_PYTORCH_DOCKER_IMAGE to use the docker image of
+# PyTorch to base the build off.
 #
-
 option(TRITON_ENABLE_GPU "Enable GPU support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
@@ -61,10 +60,12 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(TRITON_PYTORCH_DOCKER_BUILD OFF)
+
 if(TRITON_PYTORCH_LIB_PATHS STREQUAL "")
   if(TRITON_PYTORCH_DOCKER_IMAGE STREQUAL "")
     message(FATAL_ERROR "Using the PyTorch docker based build requires TRITON_PYTORCH_DOCKER_IMAGE")
   endif()
+
   set(TRITON_PYTORCH_DOCKER_BUILD ON)
   message(STATUS "Using PyTorch docker: ${TRITON_PYTORCH_DOCKER_IMAGE}")
 else()
@@ -73,7 +74,7 @@ else()
     message(WARNING "TRITON_PYTORCH_ENABLE_TORCHTRT is on, but TRITON_PYTORCH_LIB_PATHS does not contain Torch-TRT package")
   endif()
 
-    # Look for installed Torchvision package in lib paths
+  # Look for installed Torchvision package in lib paths
   if(TRITON_PYTORCH_ENABLE_TORCHVISION AND NOT EXISTS "${TRITON_PYTORCH_LIB_PATHS}/libtorchvision.so")
     message(WARNING "TRITON_PYTORCH_ENABLE_TORCHVISION is on, but TRITON_PYTORCH_LIB_PATHS does not contain Torchvision package")
   endif()
@@ -116,11 +117,10 @@ FetchContent_Declare(
 
 # FetchContent_GetProperties(magic_enum)
 # if (NOT magic_enum_POPULATED)
-#     FetchContent_Populate(magic_enum)
-#     add_subdirectory(${magic_enum_SOURCE_DIR} ${magic_enum_BINARY_DIR})
-#     include_directories(${magic_enum_SOURCE_DIR})
+# FetchContent_Populate(magic_enum)
+# add_subdirectory(${magic_enum_SOURCE_DIR} ${magic_enum_BINARY_DIR})
+# include_directories(${magic_enum_SOURCE_DIR})
 # endif ()
-
 FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum)
 
 #
@@ -129,7 +129,7 @@ FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum)
 if(${TRITON_ENABLE_GPU})
   find_package(CUDAToolkit REQUIRED)
 else()
-  if (${TRITON_PYTORCH_ENABLE_TORCHTRT})
+  if(${TRITON_PYTORCH_ENABLE_TORCHTRT})
     message(FATAL_ERROR "TRITON_PYTORCH_ENABLE_TORCHTRT is ON when TRITON_ENABLE_GPU is OFF")
   endif()
 endif() # TRITON_ENABLE_GPU
@@ -144,74 +144,75 @@ endif() # TRITON_ENABLE_NVTX
 configure_file(src/libtriton_pytorch.ldscript libtriton_pytorch.ldscript COPYONLY)
 
 set(PT_LIBS
-    "libc10.so"
-    "libc10_cuda.so"
-    "libtorch.so"
-    "libtorch_cpu.so"
-    "libtorch_cuda.so"
-    "libtorch_global_deps.so"
+  "libc10.so"
+  "libc10_cuda.so"
+  "libtorch.so"
+  "libtorch_cpu.so"
+  "libtorch_cuda.so"
+  "libtorch_global_deps.so"
 )
 
-if (${TRITON_PYTORCH_ENABLE_TORCHVISION})
+if(${TRITON_PYTORCH_ENABLE_TORCHVISION})
   set(PT_LIBS
-      ${PT_LIBS}
-      "libtorchvision.so"
+    ${PT_LIBS}
+    "libtorchvision.so"
   )
 endif() # TRITON_PYTORCH_ENABLE_TORCHVISION
 
-if (${TRITON_PYTORCH_ENABLE_TORCHTRT})
+if(${TRITON_PYTORCH_ENABLE_TORCHTRT})
   set(PT_LIBS
-      ${PT_LIBS}
-      "libtorchtrt_runtime.so"
+    ${PT_LIBS}
+    "libtorchtrt_runtime.so"
   )
 endif() # TRITON_PYTORCH_ENABLE_TORCHTRT
 
-if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64")
+if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64")
   set(LIBS_ARCH "aarch64")
   set(CONDA_LIBS
-      "libopenblas.so.0"
+    "libopenblas.so.0"
   )
 else()
   set(LIBS_ARCH "x86_64")
   set(CONDA_LIBS
-      "libmkl_core.so"
-      "libmkl_gnu_thread.so"
-      "libmkl_intel_lp64.so"
-      "libmkl_intel_thread.so"
-      "libmkl_def.so"
-      "libmkl_vml_def.so"
-      "libmkl_rt.so"
-      "libmkl_avx2.so"
-      "libmkl_avx512.so"
-      "libmkl_sequential.so"
-      "libomp.so"
+    "libmkl_core.so"
+    "libmkl_gnu_thread.so"
+    "libmkl_intel_lp64.so"
+    "libmkl_intel_thread.so"
+    "libmkl_def.so"
+    "libmkl_vml_def.so"
+    "libmkl_rt.so"
+    "libmkl_avx2.so"
+    "libmkl_avx512.so"
+    "libmkl_sequential.so"
+    "libomp.so"
   )
 endif()
+
 set(OPENCV_LIBS
-    "libopencv_video.so"
-    "libopencv_videoio.so"
-    "libopencv_highgui.so"
-    "libopencv_imgcodecs.so"
-    "libopencv_imgproc.so"
-    "libopencv_core.so"
-    "libpng16.so"
-    "libjpeg.so"
+  "libopencv_video.so"
+  "libopencv_videoio.so"
+  "libopencv_highgui.so"
+  "libopencv_imgcodecs.so"
+  "libopencv_imgproc.so"
+  "libopencv_core.so"
+  "libpng16.so"
+  "libjpeg.so"
 )
 
 # The patchelf commands ensure the MKL libraries are loaded correctly during runtime
-# Without these, the framework/backend complains of missing libraries / symbols and 
+# Without these, the framework/backend complains of missing libraries / symbols and
 # in some cases leads to segmentation faults.
-if (${TRITON_PYTORCH_DOCKER_BUILD})
+if(${TRITON_PYTORCH_DOCKER_BUILD})
   string(REPLACE ";" " " CONDA_LIBS_STR "${CONDA_LIBS}")
 
   add_custom_command(
     OUTPUT
-      ${PT_LIBS}
-      ${CONDA_LIBS}
-      ${OPENCV_LIBS}
-      LICENSE.pytorch
-      include/torch
-      include/torchvision
+    ${PT_LIBS}
+    ${CONDA_LIBS}
+    ${OPENCV_LIBS}
+    LICENSE.pytorch
+    include/torch
+    include/torchvision
     COMMAND ${CMAKE_COMMAND} -E make_directory "include/torchvision"
     COMMAND docker pull ${TRITON_PYTORCH_DOCKER_IMAGE}
     COMMAND docker rm pytorch_backend_ptlib || echo "error ignored..." || true
@@ -260,31 +261,48 @@ if (${TRITON_PYTORCH_DOCKER_BUILD})
   set_target_properties(
     ptlib
     PROPERTIES
-      IMPORTED_LOCATION libtorch.so
+    IMPORTED_LOCATION libtorch.so
   )
 endif() # TRITON_PYTORCH_DOCKER_BUILD
 
+file(GLOB EVENT_SRC src/event/*.cc)
+file(GLOB BASE_SRC src/base/*.cc)
+file(GLOB UTILS_SRC src/utils/*.cc)
+file(GLOB DATAFLOW_SRC src/dataflow/*.cc)
+file(GLOB ENGINE_SRC src/engine/*.cc)
+
+file(GLOB EVENT_INC src/event/*.h)
+file(GLOB BASE_INC src/base/*.h)
+file(GLOB UTILS_INC src/utils/*.h)
+file(GLOB DATAFLOW_INC src/dataflow/*.h)
+file(GLOB ENGINE_INC src/engine/*.h)
+
+# add_library(
+# event-loop SHARED
+# ${EVENT_SRC}
+# ${BASE_SRC}
+# ${EVENT_INC}
+# ${BASE_INC}
+# )
 add_library(
   triton-pytorch-backend SHARED
   src/libtorch.cc
   src/libtorch_utils.cc
   src/libtorch_utils.h
-  src/dag_registry.h
-  src/dag_registry.cc
-  src/libtorch_flow.cc
-  src/libtorch_flow.h
-  src/libtorch_stats.cc
-  src/libtorch_stats.h
-  src/lru_cache.cc
-  src/lru_cache.h
   src/model_state.h
   src/model_state.cc
   src/model_instance_state.h
   src/model_instance_state.cc
-  src/memory_manager.cc
-  src/memory_manager.h
-  src/dag_node.h
-  src/dag_node.cc
+  ${EVENT_SRC}
+  ${BASE_SRC}
+  ${EVENT_INC}
+  ${BASE_INC}
+  ${UTILS_SRC}
+  ${UTILS_INC}
+  ${DATAFLOW_SRC}
+  ${DATAFLOW_INC}
+  ${ENGINE_SRC}
+  ${ENGINE_INC}
 )
 
 add_library(
@@ -294,17 +312,19 @@ add_library(
 target_include_directories(
   triton-pytorch-backend
   PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${Python3_INCLUDE_DIRS}
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/event
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/base
+  ${Python3_INCLUDE_DIRS}
 )
 
-if (${TRITON_PYTORCH_DOCKER_BUILD})
+if(${TRITON_PYTORCH_DOCKER_BUILD})
   target_include_directories(
     triton-pytorch-backend
     PRIVATE
-      ${CMAKE_CURRENT_BINARY_DIR}/include/torch
-      ${CMAKE_CURRENT_BINARY_DIR}/include/torch/torch/csrc/api/include
-      ${CMAKE_CURRENT_BINARY_DIR}/include/torchvision
+    ${CMAKE_CURRENT_BINARY_DIR}/include/torch
+    ${CMAKE_CURRENT_BINARY_DIR}/include/torch/torch/csrc/api/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include/torchvision
   )
 else()
   target_include_directories(
@@ -320,7 +340,7 @@ target_compile_features(triton-pytorch-backend PRIVATE cxx_std_11)
 target_compile_options(
   triton-pytorch-backend PRIVATE
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
-    -Wall -Wextra -Wno-unused-parameter -Wno-type-limits>
+  -Wall -Wextra -Wno-unused-parameter -Wno-type-limits>
 )
 
 if(${TRITON_ENABLE_GPU})
@@ -333,14 +353,14 @@ endif() # TRITON_ENABLE_GPU
 set_target_properties(
   triton-pytorch-backend
   PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    OUTPUT_NAME triton_pytorch
-    SKIP_BUILD_RPATH TRUE
-    BUILD_WITH_INSTALL_RPATH TRUE
-    INSTALL_RPATH_USE_LINK_PATH FALSE
-    INSTALL_RPATH "$\{ORIGIN\}"
-    LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libtriton_pytorch.ldscript
-    LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_pytorch.ldscript"
+  POSITION_INDEPENDENT_CODE ON
+  OUTPUT_NAME triton_pytorch
+  SKIP_BUILD_RPATH TRUE
+  BUILD_WITH_INSTALL_RPATH TRUE
+  INSTALL_RPATH_USE_LINK_PATH FALSE
+  INSTALL_RPATH "$\{ORIGIN\}"
+  LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libtriton_pytorch.ldscript
+  LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_pytorch.ldscript"
 )
 
 # Need to turn off unused-but-set-variable due to Torchvision
@@ -348,10 +368,10 @@ set_target_properties(
 set_target_properties(
   triton-pytorch-backend
   PROPERTIES COMPILE_FLAGS
-    "-Wno-unknown-pragmas -Wno-unused-but-set-variable"
+  "-Wno-unknown-pragmas -Wno-unused-but-set-variable"
 )
 
-if (${TRITON_PYTORCH_DOCKER_BUILD})
+if(${TRITON_PYTORCH_DOCKER_BUILD})
   add_dependencies(
     triton-pytorch-backend
     ptlib
@@ -362,34 +382,35 @@ message(STATUS "Torchvision support is ${TRITON_PYTORCH_ENABLE_TORCHVISION}")
 message(STATUS "Torch-TRT support is ${TRITON_PYTORCH_ENABLE_TORCHTRT}")
 
 set(TRITON_PYTORCH_LDFLAGS "")
-if (${TRITON_PYTORCH_DOCKER_BUILD})
+
+if(${TRITON_PYTORCH_DOCKER_BUILD})
   set(TRITON_PYTORCH_LIBS "${CMAKE_CURRENT_BINARY_DIR}/libtorch.so")
 
-  if (${TRITON_PYTORCH_ENABLE_TORCHVISION})
+  if(${TRITON_PYTORCH_ENABLE_TORCHVISION})
     set(TRITON_PYTORCH_LIBS
-        ${TRITON_PYTORCH_LIBS}
-        "${CMAKE_CURRENT_BINARY_DIR}/libtorchvision.so")
+      ${TRITON_PYTORCH_LIBS}
+      "${CMAKE_CURRENT_BINARY_DIR}/libtorchvision.so")
   endif() # TRITON_PYTORCH_ENABLE_TORCHVISION
 
-  if (${TRITON_PYTORCH_ENABLE_TORCHTRT})
+  if(${TRITON_PYTORCH_ENABLE_TORCHTRT})
     set(TRITON_PYTORCH_LIBS
-        ${TRITON_PYTORCH_LIBS}
-        "${CMAKE_CURRENT_BINARY_DIR}/libtorchtrt_runtime.so")
+      ${TRITON_PYTORCH_LIBS}
+      "${CMAKE_CURRENT_BINARY_DIR}/libtorchtrt_runtime.so")
   endif() # TRITON_PYTORCH_ENABLE_TORCHTRT
 else()
-  set (TRITON_PYTORCH_LIBS "-ltorch")
+  set(TRITON_PYTORCH_LIBS "-ltorch")
 
-  if (${TRITON_PYTORCH_ENABLE_TORCHVISION})
+  if(${TRITON_PYTORCH_ENABLE_TORCHVISION})
     set(TRITON_PYTORCH_LIBS
-        ${TRITON_PYTORCH_LIBS}
-        "-ltorchvision"
+      ${TRITON_PYTORCH_LIBS}
+      "-ltorchvision"
     )
   endif() # TRITON_PYTORCH_ENABLE_TORCHVISION
 
-  if (${TRITON_PYTORCH_ENABLE_TORCHTRT})
+  if(${TRITON_PYTORCH_ENABLE_TORCHTRT})
     set(TRITON_PYTORCH_LIBS
-        ${TRITON_PYTORCH_LIBS}
-        "-ltorchtrt_runtime"
+      ${TRITON_PYTORCH_LIBS}
+      "-ltorchtrt_runtime"
     )
   endif() # TRITON_PYTORCH_ENABLE_TORCHTRT
 
@@ -401,19 +422,19 @@ endif() # TRITON_PYTORCH_DOCKER_BUILD
 target_link_libraries(
   triton-pytorch-backend
   PRIVATE
-    triton-core-serverapi  # from repo-core
-    triton-core-backendapi # from repo-core
-    triton-core-serverstub # from repo-core
-    triton-backend-utils   # from repo-backend
-    ${TRITON_PYTORCH_LDFLAGS}
-    ${TRITON_PYTORCH_LIBS}
+  triton-core-serverapi # from repo-core
+  triton-core-backendapi # from repo-core
+  triton-core-serverstub # from repo-core
+  triton-backend-utils # from repo-backend
+  ${TRITON_PYTORCH_LDFLAGS}
+  ${TRITON_PYTORCH_LIBS}
 )
 
 if(${TRITON_ENABLE_GPU})
   target_link_libraries(
     triton-pytorch-backend
     PRIVATE
-      CUDA::cudart
+    CUDA::cudart
   )
 endif() # TRITON_ENABLE_GPU
 
@@ -425,30 +446,31 @@ set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/TritonPyTorchBackend)
 
 install(
   TARGETS
-    triton-pytorch-backend
+  triton-pytorch-backend
   EXPORT
-    triton-pytorch-backend-targets
+  triton-pytorch-backend-targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/pytorch
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/pytorch
 )
 
-if (${TRITON_PYTORCH_DOCKER_BUILD})
+if(${TRITON_PYTORCH_DOCKER_BUILD})
   set(PT_LIB_PATHS "")
+
   FOREACH(plib ${PT_LIBS} ${CONDA_LIBS} ${OPENCV_LIBS})
     set(PT_LIB_PATHS ${PT_LIB_PATHS} "${CMAKE_CURRENT_BINARY_DIR}/${plib}")
   ENDFOREACH(plib)
 
   install(
     FILES
-      ${PT_LIB_PATHS}
-      ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.pytorch
+    ${PT_LIB_PATHS}
+    ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.pytorch
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/pytorch
   )
 
-  if (${TRITON_PYTORCH_ENABLE_TORCHTRT})
+  if(${TRITON_PYTORCH_ENABLE_TORCHTRT})
     install(
       FILES
-        ${CMAKE_CURRENT_BINARY_DIR}/torchtrtc
+      ${CMAKE_CURRENT_BINARY_DIR}/torchtrtc
       DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/pytorch
     )
   endif() # TRITON_PYTORCH_ENABLE_TORCHTRT
@@ -456,7 +478,7 @@ if (${TRITON_PYTORCH_DOCKER_BUILD})
   FOREACH(plib ${PT_LIBS} ${CONDA_LIBS} ${OPENCV_LIBS})
     install(
       CODE
-        "EXECUTE_PROCESS(
+      "EXECUTE_PROCESS(
           COMMAND patchelf --set-rpath \$ORIGIN ${plib}
           RESULT_VARIABLE PATCHELF_STATUS
           WORKING_DIRECTORY ${CMAKE_INSTALL_PREFIX}/backends/pytorch)
@@ -469,7 +491,7 @@ if (${TRITON_PYTORCH_DOCKER_BUILD})
   set(OPENCV_VERSION "3.4")
   install(
     CODE
-      "EXECUTE_PROCESS(
+    "EXECUTE_PROCESS(
         COMMAND ln -sf libopencv_video.so libopencv_video.so.${OPENCV_VERSION}
         COMMAND ln -sf libopencv_videoio.so libopencv_videoio.so.${OPENCV_VERSION}
         COMMAND ln -sf libopencv_highgui.so libopencv_highgui.so.${OPENCV_VERSION}
@@ -491,14 +513,14 @@ else()
 
   install(
     FILES
-      ${PT_LIB_PATHS}
+    ${PT_LIB_PATHS}
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/pytorch
   )
 
   FOREACH(plib ${PT_LIBS})
     install(
       CODE
-        "EXECUTE_PROCESS(
+      "EXECUTE_PROCESS(
           COMMAND patchelf --set-rpath \$ORIGIN ${plib}
           RESULT_VARIABLE PATCHELF_STATUS
           WORKING_DIRECTORY ${CMAKE_INSTALL_PREFIX}/backends/pytorch)
@@ -511,13 +533,13 @@ endif() # TRITON_PYTORCH_DOCKER_BUILD
 
 install(
   EXPORT
-    triton-pytorch-backend-targets
+  triton-pytorch-backend-targets
   FILE
-    TritonPyTorchBackendTargets.cmake
+  TritonPyTorchBackendTargets.cmake
   NAMESPACE
-    TritonPyTorchBackend::
+  TritonPyTorchBackend::
   DESTINATION
-    ${INSTALL_CONFIGDIR}
+  ${INSTALL_CONFIGDIR}
 )
 
 include(CMakePackageConfigHelpers)

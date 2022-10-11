@@ -2,7 +2,7 @@
 
 #include <torch/script.h>
 
-#include "dag_node.h"
+#include "dataflow/dag_node.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_model.h"
 

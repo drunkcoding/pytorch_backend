@@ -3,10 +3,7 @@
 #include <iostream>
 #include <type_traits>
 
-#include "dag_node.h"
-#include "libtorch_common.h"
-#include "triton/backend/backend_common.h"
-
+#include "log_utils.h"
 
 template <typename Key, typename Value>
 class LRUCache {
@@ -35,7 +32,7 @@ class LRUCache {
     auto iter = cache_iter_.find(key);
     if (cache_it != cache_.end()) {
       // Move the accessed item to the front of the list
-      LOG_VERBOSE((std::string("Key ") + key +
+      LOG_VERBOSE((std::string("Key ") + std::to_string(key) +
                    std::string(" already exists, update value"))
                       .c_str());
       MoveToFront(iter);
@@ -45,7 +42,7 @@ class LRUCache {
     if (cache_.size() == capacity_) {
       // Remove the least recently used item from the list
       LOG_VERBOSE(
-          (std::string("Key ") + key +
+          (std::string("Key ") + std::to_string(key) +
            std::string(" does not exist, remove the least recently used item"))
               .c_str());
       auto& back_key = lru_list_.back();
@@ -55,7 +52,7 @@ class LRUCache {
     }
     // Create a new item at the front of the list
     LOG_VERBOSE(
-        (std::string("Key ") + key +
+        (std::string("Key ") + std::to_string(key) +
          std::string(
              " does not exist, create a new item at the front of the list"))
             .c_str());
@@ -72,9 +69,31 @@ class LRUCache {
     if (cache_it == cache_.end()) {
       return nullptr;
     }
+    ValuePtr value = cache_it->second;
     lru_list_.erase(iter->second);
     cache_iter_.erase(iter);
     cache_.erase(cache_it);
+    return value;
+  }
+
+  std::pair<Key, ValuePtr> GetTail() const
+  {
+    auto cache_it = cache_.find(lru_list_.back());
+    if (cache_it == cache_.end()) {
+      return nullptr;
+    }
+    return *cache_it;
+  }
+
+  std::list<std::pair<Key, ValuePtr>> GetCacheInOrder() const {
+    std::list<std::pair<Key, ValuePtr>> cache_in_order;
+    for (auto iter = lru_list_.begin(); iter != lru_list_.end(); ++iter) {
+      auto cache_it = cache_.find(*iter);
+      if (cache_it != cache_.end()) {
+        cache_in_order.push_back(*cache_it);
+      }
+    }
+    return cache_in_order;
   }
 
   std::size_t Size() const { return cache_.size(); }

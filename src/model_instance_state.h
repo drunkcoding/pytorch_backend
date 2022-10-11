@@ -2,13 +2,15 @@
 
 #include <torch/script.h>
 
-#include "libtorch_common.h"
+#include "dataflow/dag_node.h"
+#include "engine/backend_engine.h"
+#include "eventloop_thread.h"
 #include "model_state.h"
-#include "dag_node.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
 #include "triton/backend/backend_memory.h"
 #include "triton/backend/backend_model_instance.h"
+#include "utils/enum_utils.h"
 
 namespace triton { namespace backend { namespace pytorch {
 
@@ -29,7 +31,9 @@ ENUM_MACRO(
 // State associated with a model instance. An object of this class is
 // created and associated with each TRITONBACKEND_ModelInstance.
 //
-class ModelInstanceState : public BackendModelInstance {
+class ModelInstanceState
+    : public BackendModelInstance,
+      public std::enable_shared_from_this<ModelInstanceState> {
  public:
   static TRITONSERVER_Error* Create(
       ModelState* model_state,
@@ -42,6 +46,8 @@ class ModelInstanceState : public BackendModelInstance {
 
   // Execute...
   void ProcessRequests(
+      TRITONBACKEND_Request** requests, const uint32_t request_count);
+  void ProcessRequestsInLoop(
       TRITONBACKEND_Request** requests, const uint32_t request_count);
 
   // Clear CUDA cache
@@ -84,15 +90,23 @@ class ModelInstanceState : public BackendModelInstance {
       NamingConvention* naming_convention,
       const std::vector<std::string>& allowed_io);
 
+//   void TryAllocateNodeOnGPU();
+//   void TryReleaseNodeOnGPU();
+
   ModelState* model_state_;
 
   // The full path to the TorchScript model file.
   std::string model_path_;
 
   std::shared_ptr<torch::jit::script::Module> torch_model_;
-//   torch::jit::script::Module* torch_model_;
+  //   torch::jit::script::Module* torch_model_;
   DAGNodePtr node_;
+  std::mutex exec_mutex_;
+//   std::condition_variable exec_cv_;
   torch::Device device_;
+
+  // EventLoop base programming
+  BackendEngine engine_;
 
   // Map from configuration name for an input to the index of
   // that input in the model.
@@ -112,6 +126,10 @@ class ModelInstanceState : public BackendModelInstance {
   cudaEvent_t compute_input_start_event_;
   cudaEvent_t compute_infer_start_event_;
   cudaEvent_t compute_output_start_event_;
+
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
 };
 
 
