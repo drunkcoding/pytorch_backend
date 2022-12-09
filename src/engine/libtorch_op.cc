@@ -1,0 +1,223 @@
+#include "libtorch_op.h"
+
+#include "backend_engine.h"
+#include "engine_ctx.h"
+#include "dataflow/deepspeed_flow_controller.h"
+#include "dataflow/prefetch_flow_controller.h"
+#include "dataflow/counter_flow_controller.h"
+
+LibtorchOpManager::LibtorchOpManager(muduo::net::EventLoop* loop) : OpBase(loop)
+{
+}
+
+LibtorchOpManager::~LibtorchOpManager() {}
+
+// void
+// LibtorchOpManager::PrefetchModel(const LibtorchRequestPtr& request)
+// {
+//   auto prefetch_request =
+//       std::static_pointer_cast<LibtorchPrefetchRequest>(request);
+//   // auto prob_vec =
+//   //
+//   GET_INSTANCE(LibtorchEngine)->GetTreeProbability(prefetch_request->node);
+//   // for (std::size_t i = 0; i < prob_vec.size() && i < 10; i++) {
+//   //   prefetch_key_set.insert(prob_vec[i].first);
+//   // }
+
+//   // EvictionCandidates eviction_candidates;
+//   // bool is_evictable = false;
+//   // // Device target_device = DISK_DEVICE;
+//   // std::tie(eviction_candidates, is_evictable,
+//   // prefetch_request->target_device) =
+//   //     GET_INSTANCE(MemoryController)
+//   //         ->AllocMemory(
+//   //             prefetch_request->node, prefetch_request->target_device);
+
+//   // FLOW_CONTROLLER->PrefetchNode(prefetch_request->node);
+
+//   // std::atomic_uint64_t wait_count{eviction_candidates.size()};
+//   // if (wait_count > 0) {
+//   //   for (auto& eviction_candidate : eviction_candidates) {
+//   //     RunUnloadInBackend(request, eviction_candidate, CPU_DEVICE,
+//   //     &wait_count);
+//   //   }
+//   // } else {
+//   //   DispatchToBackend(prefetch_request);
+//   // }
+// }
+
+void
+LibtorchOpManager::ExecuteModel(const LibtorchRequestPtr& request)
+{
+  auto exec_request = std::static_pointer_cast<LibtorchExecuteRequest>(request);
+
+  backend_engine_map_.emplace(
+      exec_request->node->GetNodeID(), exec_request->engine);
+
+  auto node_move_vec = FLOW_CONTROLLER->PrefetchNode(exec_request->node);
+
+  // eviction_candidates is node where device not to CUDA
+  NodeMoveVec eviction_candidates;
+  // NodeMoveVec prefetch_candidates;
+  for (auto& node_move : node_move_vec) {
+    if (node_move.second != DEFAULT_CUDA_DEVICE) {
+      eviction_candidates.push_back(node_move);
+    }
+    else
+    {
+      node_prefetch_vec_.push_back(node_move);
+    }
+  }
+  std::atomic_uint64_t wait_count{eviction_candidates.size()};
+  LOG_TRITON_VERBOSE(("Wait for " + std::to_string(wait_count) +
+                      " models to be evicted from " +
+                      exec_request->target_device.str())
+                         .c_str());
+
+  if (wait_count > 0) {
+    for (auto& eviction_candidate : eviction_candidates) {
+      RunUnloadInBackend(
+          request, eviction_candidate.first, eviction_candidate.second,
+          &wait_count);
+    }
+  } else {
+    DispatchToBackend(exec_request);
+  }
+
+  // auto prefetch_request = std::make_shared<FlowPrefetchRequest>();
+  // prefetch_request->node = exec_request->node;
+  // prefetch_request->engine = exec_request->engine;
+  // LOG_TRITON_VERBOSE(
+  //     "LibtorchOpManager::ExecuteModel FlowOpManager::PrefetchNode");
+  // ENGINE_CTX->ProcessFlowRequest(prefetch_request);
+
+  // for (auto& prefetch_candidate : prefetch_candidates) {
+  //   RunLoadInBackend(
+  //       exec_request->engine, prefetch_candidate.first,
+  //       prefetch_candidate.second);
+  // }
+}
+
+void
+LibtorchOpManager::RunUnloadInBackend(
+    const LibtorchRequestPtr& request, const DAGNodePtr& node,
+    const Device& device, std::atomic_uint64_t* wait_count)
+{
+  auto backend_unload_request = std::make_shared<BackendUnloadRequest>();
+  backend_unload_request->node = node;
+  // backend_unload_request->handle = loop_->GetLoopHandle();
+  backend_unload_request->target_device = device;
+  backend_unload_request->cb = SELF_BIND_ARGS(
+      LibtorchOpManager, EntryWaitModelUnload, std::placeholders::_1, request,
+      wait_count);
+
+  node->SetMemoryType(MemoryType::kMoving);
+  request->engine->ProcessRequest(backend_unload_request);
+}
+
+void
+LibtorchOpManager::RunLoadInBackend(
+    const BackendEnginePtr& engine, const DAGNodePtr& node,
+    const Device& device)
+{
+  auto backend_load_request = std::make_shared<BackendLoadRequest>();
+  backend_load_request->node = node;
+  backend_load_request->target_device = device;
+  backend_load_request->cb = SELF_BIND_ARGS(
+      LibtorchOpManager, EntryWaitModelLoad, std::placeholders::_1);
+  engine->ProcessRequest(backend_load_request);
+}
+
+void
+LibtorchOpManager::DispatchToBackend(const LibtorchRequestPtr& request)
+{
+  if (request->op_type == LibtorchOpType::kPrefetch) {
+    auto prefetch_request =
+        std::static_pointer_cast<LibtorchPrefetchRequest>(request);
+    LOG_TRITON_VERBOSE(("Prefetch model " +
+                        prefetch_request->node->GetModelInstanceInfo() +
+                        " to " + prefetch_request->target_device.str())
+                           .c_str());
+    RunLoadInBackend(
+        prefetch_request->engine, prefetch_request->node,
+        prefetch_request->target_device);
+    return;
+  }
+
+  if (request->op_type == LibtorchOpType::kExecute) {
+    auto exec_request =
+        std::static_pointer_cast<LibtorchExecuteRequest>(request);
+    LOG_TRITON_VERBOSE(("Execute model " +
+                        exec_request->node->GetModelInstanceInfo() + " on " +
+                        exec_request->target_device.str())
+                           .c_str());
+    RunLoadInBackend(
+        exec_request->engine, exec_request->node, exec_request->target_device);
+
+    auto backend_execute_request = std::make_shared<BackendExecuteRequest>();
+    backend_execute_request->op_type = BackendOpType::kExecute;
+    backend_execute_request->process_requests_cb =
+        exec_request->process_requests_cb;
+    backend_execute_request->mutex = exec_request->mutex;
+    backend_execute_request->cv = exec_request->cv;
+
+    exec_request->engine->ProcessRequest(backend_execute_request);
+  }
+
+  for (auto& prefetch_candidate : node_prefetch_vec_) {
+    auto node_id = prefetch_candidate.first->GetNodeID();
+    auto engine_it = backend_engine_map_.find(node_id);
+    if (engine_it != backend_engine_map_.end()) {
+      RunLoadInBackend(
+          engine_it->second, prefetch_candidate.first,
+          prefetch_candidate.second);
+    }
+  }
+}
+
+void
+LibtorchOpManager::EntryWaitModelUnload(
+    const BackendResponsePtr& response, const LibtorchRequestPtr& request,
+    std::atomic_uint64_t* wait_count)
+{
+  if (loop_->isInLoopThread()) {
+    (*wait_count)--;
+    auto unload_response =
+        std::static_pointer_cast<BackendUnloadResponse>(response);
+    unload_response->node->SetMemoryType(MemoryType::kStandBy);
+    if (*wait_count > 0)
+      return;
+  } else {
+    loop_->queueInLoop(SELF_BIND_ARGS(
+        LibtorchOpManager, EntryWaitModelUnload, response, request,
+        wait_count));
+  }
+
+  DispatchToBackend(request);
+}
+
+
+void
+LibtorchOpManager::EntryWaitImmedientModel(
+    const BackendResponsePtr& response, const LibtorchRequestPtr& request)
+{
+  if (loop_->isInLoopThread()) {
+    DispatchToBackend(request);
+  } else {
+    loop_->queueInLoop(SELF_BIND_ARGS(
+        LibtorchOpManager, EntryWaitImmedientModel, response, request));
+  }
+}
+
+void
+LibtorchOpManager::EntryWaitModelLoad(const BackendResponsePtr& response)
+{
+  if (loop_->isInLoopThread()) {
+    auto load_response =
+        std::static_pointer_cast<BackendLoadResponse>(response);
+    load_response->node->SetMemoryType(MemoryType::kReady);
+  } else {
+    loop_->queueInLoop(
+        SELF_BIND_ARGS(LibtorchOpManager, EntryWaitModelLoad, response));
+  }
+}

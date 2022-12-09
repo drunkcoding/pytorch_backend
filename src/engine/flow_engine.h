@@ -1,29 +1,40 @@
-#include "engine_base.h"
+#pragma once
+
 #include "flow_op.h"
+#include "muduo/net/EventLoop.h"
+#include "muduo/net/EventLoopThread.h"
 
-class FlowEngineHandle
-    : public EngineHandleBase,
-      public std::enable_shared_from_this<FlowEngineHandle> {
+// class FlowEngineHandle : public uevent::LoopHandle {
+//  public:
+//   DEFAULT_LOOPHANDLE_MEMBER(FlowEngineHandle)
+
+//  public:
+//   void DispachRequest(const FlowOpRequestPtr& request);
+//   void RegisterService();
+
+//  private:
+//   std::shared_ptr<FlowOpManager> op_manager_;
+//   muduo::net::EventLoop* loop_;
+// };
+
+class FlowEngine : public std::enable_shared_from_this<FlowEngine> {
  public:
-  DEFAULT_LOOPHANDLE_MEMBER(FlowEngineHandle)
-
- public:
-  virtual void DispachRequest(const RequestPtr& request);
-
- private:
-  void RegisterService();
-
-  void RecordNode(const FlowOpRequestPtr& request);
-  void PrefetchNode(const FlowOpRequestPtr& request);
-};
-
-class FlowEngine : public EngineBase,
-                      public std::enable_shared_from_this<FlowEngine> {
- public:
-  // DEFAULT_CLASS_MEMBER(FlowEngine)
-  STATIC_GET_INSTANCE(FlowEngine)
+  // STATIC_GET_INSTANCE(FlowEngine)
+  // DISABLE_COPY_AND_ASSIGN(FlowEngine)
   FlowEngine();
   ~FlowEngine();
 
-  LoopHandle* GetHandle() { return loop_->GetLoopHandle(); }
+  static void ThreadInit(muduo::net::EventLoop* loop) {}
+
+  void ProcessRequest(const FlowOpRequestPtr& request);
+  void ProcessRequestInLoop(const FlowOpRequestPtr& request);
+
+ private:
+  void DispachRequest(const FlowOpRequestPtr& request);
+
+ private:
+  std::shared_ptr<muduo::net::EventLoopThread> loop_thread_;
+  muduo::net::EventLoop* loop_;
+  std::shared_ptr<FlowOpManager> op_manager_;
 };
+typedef std::shared_ptr<FlowEngine> FlowEnginePtr;

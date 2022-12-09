@@ -39,8 +39,8 @@ namespace triton { namespace backend { namespace pytorch {
 //   auto end_time = TIME_NOW;
 //   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
 //       end_time - start_time);
-//   LOG_INFO(("Allocate memory for " + node_->GetModelInstanceInfo() + " takes
-//   " +
+//   LOG_TRITON_INFO(("Allocate memory for " + node_->GetModelInstanceInfo() + "
+//   takes " +
 //             std::to_string(duration.count()) + " us")
 //                .c_str());
 // }
@@ -54,11 +54,12 @@ namespace triton { namespace backend { namespace pytorch {
 //   GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(release_request);
 //   //   node_->SetMemoryState(MemoryState::INACTIVE);
 //   // WaitForMemoryManageRequest(release_request, MemoryState::INACTIVE);
-//   LOG_VERBOSE(("Release memory for " +
+//   LOG_TRITON_VERBOSE(("Release memory for " +
 //   node_->GetModelInstanceInfo()).c_str()); auto end_time = TIME_NOW; auto
 //   duration = std::chrono::duration_cast<std::chrono::microseconds>(
 //       end_time - start_time);
-//   LOG_INFO(("Release memory for " + node_->GetModelInstanceInfo() + " takes "
+//   LOG_TRITON_INFO(("Release memory for " + node_->GetModelInstanceInfo() + "
+//   takes "
 //   +
 //             std::to_string(duration.count()) + " us")
 //                .c_str());
@@ -69,22 +70,29 @@ void
 ModelInstanceState::ProcessRequestsInLoop(
     TRITONBACKEND_Request** requests, const uint32_t request_count)
 {
-  auto process_func = SELF_BIND_ARGS(
-      ModelInstanceState, ProcessRequests, requests, request_count);
-  // node_->GetBackendEnginePlugin().ProcessTritonRequest(process_func, node_);
-  mutex_.lock();
+  LOG_TRITON_VERBOSE(("ProcessRequests: " + Name() + " is processing " +
+                      std::to_string(request_count) + " requests")
+                         .c_str());
+  auto process_func = std::bind(
+      &ModelInstanceState::ProcessRequests, this, requests, request_count);
 
-  auto execute_request = std::make_shared<LibtorchExecuteRequest>();
-  execute_request->node = node_;
-  execute_request->handle = node_->GetBackendEnginePlugin()->GetLoopHandle();
-  execute_request->process_requests_cb = process_func;
-  execute_request->mutex = &mutex_;
-  execute_request->cv = &cv_;
-  GET_INSTANCE(LibtorchEngine)->RequestInLoop(execute_request);
+  LOG_TRITON_VERBOSE(
+      ("ProcessRequests: " + Name() + " is in enqueued for execution").c_str());
 
-  // no response needed just wait
-  std::unique_lock<std::mutex> lock(mutex_);
-  cv_.wait(lock);
+  node_->GetEnginePlugin()->ProcessTritonRequest(process_func, node_);
+  // mutex_.lock();
+
+  // auto execute_request = std::make_shared<LibtorchExecuteRequest>();
+  // execute_request->node = node_;
+  // execute_request->handle = node_->GetBackendEnginePlugin()->GetLoopHandle();
+  // execute_request->process_requests_cb = process_func;
+  // execute_request->mutex = &mutex_;
+  // execute_request->cv = &cv_;
+  // GET_INSTANCE(LibtorchEngine)->RequestInLoop(execute_request);
+
+  // // no response needed just wait
+  // std::unique_lock<std::mutex> lock(mutex_);
+  // cv_.wait(lock);
 }
 
 void
@@ -99,13 +107,25 @@ ModelInstanceState::ProcessRequests(
 
   torch_model_ = MODULE_PTR_NODELETE(node_->GetModel());
 
-  if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-#ifdef TRITON_ENABLE_GPU
-    at::cuda::CUDAStream torch_stream =
-        at::cuda::getStreamFromExternal(stream_, DeviceId());
-    at::cuda::setCurrentCUDAStream(torch_stream);
-#endif
-  }
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_VERBOSE,
+      (std::string("TRITONBACKEND_ModelExecute: ") + Name() +
+       " torch_model_ is " + (torch_model_ ? "not null" : "null"))
+          .c_str());
+
+//   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
+// #ifdef TRITON_ENABLE_GPU
+//     at::cuda::CUDAStream torch_stream =
+//         at::cuda::getStreamFromExternal(stream_, 0);
+//     at::cuda::setCurrentCUDAStream(torch_stream);
+// #endif
+//     LOG_MESSAGE(
+//         TRITONSERVER_LOG_VERBOSE,
+//         (std::string("TRITONBACKEND_ModelExecute: ") + Name() +
+//          " torch_stream is " + (torch_stream ? "not null" : "null"))
+//             .c_str());
+//   }
+
 
   NVTX_RANGE(nvtx_, "ProcessRequests " + Name());
 
@@ -251,10 +271,22 @@ ModelInstanceState::ProcessRequests(
           &compute_start_ns,
           reinterpret_cast<void*>(&compute_infer_start_event_)));
 
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_VERBOSE,
+      (std::string("Running ") + Name() + " with " +
+       std::to_string(total_batch_size) + " requests")
+          .c_str());
+
   // Run...
   if (!all_response_failed) {
     Execute(&responses, request_count, &input_tensors, &output_tensors);
   }
+
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_VERBOSE,
+      (std::string("Done running ") + Name() + " with " +
+       std::to_string(total_batch_size) + " requests")
+          .c_str());
 
   // Free BackendMemory used for inputs
   for (BackendMemory* mem : input_memories) {
@@ -296,9 +328,9 @@ ModelInstanceState::ProcessRequests(
           reinterpret_cast<void*>(&compute_output_start_event_)));
 
   for (size_t i = 0; i < request_count; i++) {
-    node_->GetFlowEnginePlugin()->RecordTritonRequest(
+    node_->GetEnginePlugin()->RecordTritonRequest(
         node_, requests[i], input_tensors[i],
-        (compute_end_ns - compute_start_ns) / 1000);
+        (compute_end_ns - compute_start_ns));
     // // auto request_id = std::hash<std::string>{}(GetRequestId(requests[i]));
     // auto input_size = GetIValueByteSize(input_tensors[i]);
     // // Send Request to FlowEngine
@@ -310,7 +342,7 @@ ModelInstanceState::ProcessRequests(
     // node_meta->node_id = node_->GetNodeID();
     // node_meta->visit_cnt = 1;
     // node_meta->input_size_cnt = input_size;
-    // node_meta->exec_lat_us_cnt = (compute_end_ns - compute_start_ns) / 1000;
+    // node_meta->exec_lat_ns_cnt = (compute_end_ns - compute_start_ns) / 1000;
     // flow_request->node_meta = node_meta;
     // // std::size_t load_lat_us_cnt;
     // // std::size_t unload_lat_us_cnt;
@@ -491,9 +523,13 @@ ModelInstanceState::ModelInstanceState(
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateInputs(expected_input_cnt));
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateOutputs());
 
+  LOG_TRITON_VERBOSE(("Model Validation Done " + node_ ->GetModelInstanceInfo()).c_str());
+
   // Free this to save space for other models.
   // No Input at this point, can free directly
   node_->SetDevice(DISK_DEVICE);
+  node_->SetMemoryType(MemoryType::kStandBy);
+  LOG_TRITON_VERBOSE(("Release model to disk " + node_ ->GetModelInstanceInfo()).c_str());
 }
 
 void
@@ -864,39 +900,39 @@ ModelInstanceState::Execute(
           std::get<1>(model_state_->EnabledJitExecutor());
     }
 
-    // Fuser. Parameter is ignored if NVFuser parameter is explicitily
-    // set (either enabled or disabled). No change is made unless
-    // fuser is explicitly set in parameters.
-    if (!std::get<0>(model_state_->EnabledNvfuserPair()) &&
-        std::get<0>(model_state_->EnabledTensorExprFuser())) {
-      torch::jit::setTensorExprFuserEnabled(
-          std::get<1>(model_state_->EnabledTensorExprFuser()));
-    }
+    // // Fuser. Parameter is ignored if NVFuser parameter is explicitily
+    // // set (either enabled or disabled). No change is made unless
+    // // fuser is explicitly set in parameters.
+    // if (!std::get<0>(model_state_->EnabledNvfuserPair()) &&
+    //     std::get<0>(model_state_->EnabledTensorExprFuser())) {
+    //   torch::jit::setTensorExprFuserEnabled(
+    //       std::get<1>(model_state_->EnabledTensorExprFuser()));
+    // }
 
-    // NV-Fuser. No change is made unless parameter is explicitly set.
-    if (std::get<0>(model_state_->EnabledNvfuserPair())) {
-      if (std::get<1>(model_state_->EnabledNvfuserPair()) &&
-          (device_.type() != torch::kCPU)) {
-        torch::jit::overrideCanFuseOnCPU(false);
-        torch::jit::overrideCanFuseOnGPU(false);
-        torch::jit::setTensorExprFuserEnabled(false);
-        torch::jit::RegisterCudaFuseGraph::registerPass(true);
-      } else {
-        torch::jit::overrideCanFuseOnCPU(true);
-        torch::jit::overrideCanFuseOnGPU(true);
-        torch::jit::setTensorExprFuserEnabled(true);
-        torch::jit::RegisterCudaFuseGraph::registerPass(false);
-      }
-    }
+    // // NV-Fuser. No change is made unless parameter is explicitly set.
+    // if (std::get<0>(model_state_->EnabledNvfuserPair())) {
+    //   if (std::get<1>(model_state_->EnabledNvfuserPair()) &&
+    //       (device_.type() != torch::kCPU)) {
+    //     torch::jit::overrideCanFuseOnCPU(false);
+    //     torch::jit::overrideCanFuseOnGPU(false);
+    //     torch::jit::setTensorExprFuserEnabled(false);
+    //     torch::jit::RegisterCudaFuseGraph::registerPass(true);
+    //   } else {
+    //     torch::jit::overrideCanFuseOnCPU(true);
+    //     torch::jit::overrideCanFuseOnGPU(true);
+    //     torch::jit::setTensorExprFuserEnabled(true);
+    //     torch::jit::RegisterCudaFuseGraph::registerPass(false);
+    //   }
+    // }
 
     torch::NoGradGuard no_grad;
 
-    // LOG_MESSAGE(
-    //     TRITONSERVER_LOG_VERBOSE,
-    //     (std::string("Running ") + model_state_->Name() + " with " +
-    //      std::to_string(input_tensors->size()) + " inputs and " +
-    //      std::to_string(output_tensors->size()) + " outputs")
-    //         .c_str());
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_VERBOSE,
+        (std::string("Running ") + model_state_->Name() + " with " +
+         std::to_string(input_tensors->size()) + " inputs and " +
+         std::to_string(output_tensors->size()) + " outputs")
+            .c_str());
 
     // If input is a dictionary, prepare dictionary from 'input_tensors'.
     if (is_dict_input_) {
@@ -906,18 +942,30 @@ ModelInstanceState::Execute(
         input_dict.insert(input_index.first, ival.toTensor());
       }
       std::vector<torch::jit::IValue> input_dict_ivalue = {input_dict};
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_VERBOSE,
+          (std::string("Running ") + model_state_->Name() +
+           " with dictionary inputs")
+              .c_str());
       model_outputs_ = torch_model_->forward(input_dict_ivalue);
     } else {
+      torch_model_->to(torch::Device(torch::kCUDA, 0));
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_VERBOSE,
+          (std::string("Running ") + model_state_->Name() + " with " +
+           std::to_string(input_tensors->size()) + " inputs and " +
+           std::to_string(output_tensors->size()) + " outputs")
+              .c_str());
       model_outputs_ = torch_model_->forward(*input_tensors);
     }
 
-    // LOG_MESSAGE(
-    //     TRITONSERVER_LOG_VERBOSE,
-    //     (std::string("Completed running ") + model_state_->Name() + " with "
-    //     +
-    //      std::to_string(input_tensors->size()) + " inputs and " +
-    //      std::to_string(output_tensors->size()) + " outputs")
-    //         .c_str());
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_VERBOSE,
+        (std::string("Completed running ") + model_state_->Name() + " with "
+        +
+         std::to_string(input_tensors->size()) + " inputs and " +
+         std::to_string(output_tensors->size()) + " outputs")
+            .c_str()); 
 
     if (model_outputs_.isTuple()) {
       auto model_outputs_tuple = model_outputs_.toTuple();

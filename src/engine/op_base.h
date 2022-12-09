@@ -2,10 +2,10 @@
 
 #include <functional>
 #include <memory>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
-#include "event/eventloop.h"
+#include "muduo/net/EventLoop.h"
 #include "utils/class_utils.h"
 #include "utils/enum_utils.h"
 
@@ -17,7 +17,7 @@ struct OpResponse;
 typedef std::shared_ptr<OpRequest> RequestPtr;
 typedef std::shared_ptr<OpResponse> ResponsePtr;
 
-typedef std::function<OpBase*(EventLoop*)> CreateOpIns;
+typedef std::function<OpBase*(muduo::net::EventLoop*)> CreateOpIns;
 typedef std::function<void(const ResponsePtr&)> EngineCb;
 
 
@@ -52,23 +52,23 @@ struct OpResponse {
 
 class OpBase : public std::enable_shared_from_this<OpBase> {
  public:
-  explicit OpBase(EventLoop* loop);
+  explicit OpBase(muduo::net::EventLoop* loop) {
+    loop_ = loop;
+  }
   // virtual ~OpBase() = default;
 
  public:
-  virtual void SendRequest(const RequestPtr& request)
-  {
-    request_ = request;
-    auto task = SELF_BIND(OpBase, Process);
-    loop_->RunInLoop(task);
-  }
-
- protected:
+  // virtual void SendRequest(const RequestPtr& request)
+  // {
+  //   request_ = request;
+  //   auto task = SELF_BIND(OpBase, Process);
+  //   loop_->RunInLoop(task);
+  // }
   virtual void Process() = 0;
 
  protected:
-  EventLoop* loop_;
-  RequestPtr request_;
+  muduo::net::EventLoop* loop_;
+  // RequestPtr request_;
 };
 
 class OpRegistryBase {

@@ -1,0 +1,55 @@
+#pragma once
+
+#include <memory>
+
+class BackendEngine;
+typedef std::shared_ptr<BackendEngine> BackendEnginePtr;
+
+class LibtorchEngine;
+typedef std::shared_ptr<LibtorchEngine> LibtorchEnginePtr;
+
+class FlowEngine;
+typedef std::shared_ptr<FlowEngine> FlowEnginePtr;
+
+class DAGNode;
+typedef std::shared_ptr<DAGNode> DAGNodePtr;
+
+// struct OpRequest;
+// typedef std::shared_ptr<OpRequest> RequestPtr;
+// struct OpResponse;
+// typedef std::shared_ptr<OpResponse> ResponsePtr;
+
+// struct BackendRequest;
+// typedef std::shared_ptr<BackendRequest> BackendRequestPtr;
+// struct BackendResponse;
+// typedef std::shared_ptr<BackendResponse> BackendResponsePtr;
+
+// struct LibtorchRequest;
+// typedef std::shared_ptr<LibtorchRequest> LibtorchRequestPtr;
+// struct LibtorchResponse;
+// typedef std::shared_ptr<LibtorchResponse> LibtorchResponsePtr;
+
+/*
+Maximum number of parameter elements to fetch ahead of use. Used by ZeRO3,
+ZeRO3-Offload, ZeRO-Infinity, and ZeRO-Inference.
+*/
+#ifndef PREFETCH_BUCKET_SIZE
+#define PREFETCH_BUCKET_SIZE 50000000UL
+#endif
+
+/*
+The maximum number of parameters resident per GPU before releasing. Smaller
+values use less memory, but perform more communication.
+*/
+#ifndef MAX_LIVE_PARAMETERS
+#define MAX_LIVE_PARAMETERS 10000000000UL
+#endif
+
+
+/*
+Do not release a parameter if it will be reused within this threshold of
+parameters. Smaller values use less memory, but perform more communication.
+*/
+#ifndef MAX_REUSE_DISTANCE
+#define MAX_REUSE_DISTANCE 1000000000UL
+#endif

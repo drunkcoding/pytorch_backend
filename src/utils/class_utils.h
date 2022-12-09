@@ -2,13 +2,17 @@
 
 #include <memory>
 
-#define CREATE_INS(ClassName) ClassName::CreateMyself
-#define INIT_INS(ClassName) ClassName::ThreadInit
+#define CREATE_INS(ClassName) std::bind(ClassName::CreateMyself, std::placeholders::_1)
+#define INIT_INS(ClassName) std::bind(ClassName::ThreadInit, std::placeholders::_1)
 #define SELF(ClassName) std::static_pointer_cast<ClassName>(shared_from_this())
 #define SELF_BIND(ClassName, MethodName) \
   std::bind(&ClassName::MethodName, SELF(ClassName))
 #define SELF_BIND_ARGS(ClassName, MethodName, ...) \
   std::bind(&ClassName::MethodName, SELF(ClassName), __VA_ARGS__)
+#define THIS_BIND(ClassName, MethodName) \
+  std::bind(&ClassName::MethodName, this)
+#define THIS_BIND_ARGS(ClassName, MethodName, ...) \
+  std::bind(&ClassName::MethodName, this, __VA_ARGS__)
 
 #define DEFAULT_CLASS_MEMBER(ClassName) \
   ClassName() = default;                \
@@ -23,9 +27,9 @@
   {                                               \
     return #ClassName;                            \
   }                                               \
-  explicit ClassName(EventLoop* loop);            \
+  explicit ClassName(muduo::net::EventLoop* loop);            \
   virtual ~ClassName() = default;                 \
-  static ClassName* CreateMyself(EventLoop* loop) \
+  static ClassName* CreateMyself(muduo::net::EventLoop* loop) \
   {                                               \
     return new ClassName(loop);                   \
   }                                               \
@@ -34,9 +38,9 @@
   virtual void Process();
 
 #define DEFAULT_LOOPHANDLE_MEMBER(ClassName)       \
-  explicit ClassName(EventLoop* loop);                      \
-  static void ThreadInit(EventLoop* loop);         \
-  static LoopHandle* CreateMyself(EventLoop* loop) \
+  ClassName(muduo::net::EventLoop* loop);                      \
+  static void ThreadInit(muduo::net::EventLoop* loop);         \
+  static uevent::LoopHandle* CreateMyself(muduo::net::EventLoop* loop) \
   {                                                \
     return new ClassName(loop);                    \
   }

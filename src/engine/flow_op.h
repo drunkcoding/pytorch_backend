@@ -1,16 +1,18 @@
 #pragma once
 
-#include "op_base.h"
-#include "utils/enum_utils.h"
 #include "dataflow/dag_node.h"
 #include "dataflow/flow_controller.h"
+#include "op_base.h"
+#include "utils/enum_utils.h"
+#include "utils/data_utils.h"
 
 ENUM_MACRO(FlowOpType, kRecord, kPrefetch)
 
-struct FlowOpRequest : OpRequest {
+struct FlowOpRequest {
   FlowOpType op_type;
+  FlowEnginePtr engine;
 };
-struct FlowOpResponse : OpResponse {
+struct FlowOpResponse {
   FlowOpType op_type;
 };
 
@@ -19,9 +21,9 @@ typedef std::shared_ptr<FlowOpResponse> FlowOpResponsePtr;
 
 struct FlowRecordRequest : FlowOpRequest {
   DAGNodePtr node;
-  std::string request_id;
+  InputIDPtr input_id;
   NodeMetaPtr node_meta;
-  LoopHandle* handle;
+  BackendEnginePtr engine;
   FlowRecordRequest() { op_type = FlowOpType::kRecord; }
 };
 struct FlowRecordResponse : FlowOpResponse {
@@ -30,10 +32,21 @@ struct FlowRecordResponse : FlowOpResponse {
 
 struct FlowPrefetchRequest : FlowOpRequest {
   DAGNodePtr node;
-  LoopHandle* handle;
+  BackendEnginePtr engine;
   FlowPrefetchRequest() { op_type = FlowOpType::kPrefetch; }
 };
 struct FlowPrefetchResponse : FlowOpResponse {
   DAGNodePtr node;
   FlowPrefetchResponse() { op_type = FlowOpType::kPrefetch; }
+};
+
+class FlowOpManager : public OpBase {
+ public:
+  explicit FlowOpManager(muduo::net::EventLoop* loop);
+  ~FlowOpManager();
+
+  virtual void Process() {}
+
+  void RecordNode(const FlowOpRequestPtr& request);
+  void PrefetchNode(const FlowOpRequestPtr& request);
 };

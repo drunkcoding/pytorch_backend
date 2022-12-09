@@ -3,16 +3,15 @@
 #include <functional>
 #include <memory>
 
-#include "base/noncopyable.h"
-#include "event/eventloop_thread.h"
+#include "muduo/base/noncopyable.h"
+#include "muduo/net/EventLoop.h"
 #include "op_base.h"
 #include "utils/class_utils.h"
+#include "utils/log_utils.h"
 
 class EngineHandleBase : public LoopHandle {
  public:
-  explicit EngineHandleBase(EventLoop* loop) {
-    loop_ = loop;
-  }
+  explicit EngineHandleBase(muduo::net::EventLoop* loop) { loop_ = loop; }
   virtual void DispachRequest(const RequestPtr& request) = 0;
 
  protected:
@@ -46,26 +45,31 @@ class EngineHandleBase : public LoopHandle {
 
 //  protected:
 //   std::shared_ptr<EventLoopThread> loop_thread_;
-//   EventLoop* loop_;
+//   muduo::net::EventLoop* loop_;
 // };
 
 class EngineBase : public std::enable_shared_from_this<EngineBase>,
-                   public noncopyable {
+                   public muduo::noncopyable {
  public:
   EngineBase() = default;
   virtual ~EngineBase() = default;
   // DISABLE_COPY_AND_ASSIGN(EngineBase)
-  EventLoop* GetLoop() { return loop_; }
+  muduo::net::EventLoop* GetLoop() { return loop_; }
 
  public:
-  virtual void RequestInLoop(const RequestPtr& request)
-  {
-    auto* handle = reinterpret_cast<EngineHandleBase*>(loop_->GetLoopHandle());
-    auto task = std::bind(&EngineHandleBase::DispachRequest, handle, request);
-    loop_->RunInLoop(task);
-  }
+  virtual void RequestInLoop(const RequestPtr& request) = 0;
+  // {
+  //   LOG_TRITON_VERBOSE("EngineBase::RequestInLoop");
+  //   auto* handle =
+  //   reinterpret_cast<EngineHandleBase*>(loop_->GetLoopHandle()); auto task =
+  //   std::bind(&EngineHandleBase::DispachRequest, handle, request);
+  //   loop_->RunInLoop(task);
+  //   LOG_TRITON_VERBOSE("EngineBase::RequestInLoop");
+  // }
+
+  // LoopHandle* GetHandle() { return loop_->GetLoopHandle(); }
 
  protected:
-  std::shared_ptr<EventLoopThread> loop_thread_;
-  EventLoop* loop_;
+  // std::shared_ptr<EventLoopThread> loop_thread_;
+  muduo::net::EventLoop* loop_;
 };

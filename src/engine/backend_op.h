@@ -15,11 +15,11 @@ ENUM_MACRO(BackendOpType, kExecute, kLoad, kUnload)
 // };
 // ENUM_STRUCT_MACRO(BackendOpType, kExecute, kLoad, kUnload)
 
-struct BackendOpRequest : OpRequest {
+struct BackendOpRequest {
   BackendOpType op_type;
   explicit BackendOpRequest(const BackendOpType& type) : op_type(type) {}
 };
-struct BackendOpResponse : OpResponse {
+struct BackendOpResponse {
   BackendOpType op_type;
   explicit BackendOpResponse(const BackendOpType& type) : op_type(type) {}
 };
@@ -27,10 +27,10 @@ struct BackendOpResponse : OpResponse {
 
 typedef std::shared_ptr<BackendOpRequest> BackendRequestPtr;
 typedef std::shared_ptr<BackendOpResponse> BackendResponsePtr;
-
+typedef std::function<void(const BackendResponsePtr&)> BackendCallback;
 
 struct BackendExecuteRequest : BackendOpRequest {
-  EventLoop::Functor process_requests_cb;
+  muduo::net::EventLoop::Functor process_requests_cb;
   std::mutex* mutex;
   std::condition_variable* cv;
   BackendExecuteRequest() : BackendOpRequest(BackendOpType::kExecute) {}
@@ -42,6 +42,7 @@ struct BackendExecuteResponse : BackendOpResponse {
 struct BackendLoadRequest : BackendOpRequest {
   DAGNodePtr node;
   Device target_device = DEFAULT_CUDA_DEVICE;
+  BackendCallback cb;
   BackendLoadRequest() : BackendOpRequest(BackendOpType::kLoad) {}
 };
 struct BackendLoadResponse : BackendOpResponse {
@@ -58,6 +59,18 @@ struct BackendUnloadRequest : BackendOpRequest {
   DAGNodePtr node;
   Device target_device = CPU_DEVICE;
   LoopHandle* handle;
-  std::function<void(const BackendResponsePtr&)> cb;
+  BackendCallback cb;
   BackendUnloadRequest() : BackendOpRequest(BackendOpType::kUnload) {}
+};
+
+class BackendOpManager : public OpBase {
+ public:
+  explicit BackendOpManager(muduo::net::EventLoop* loop);
+  ~BackendOpManager();
+
+  virtual void Process() {}
+
+  void ExecuteModel(const BackendRequestPtr& request);
+  void LoadModel(const BackendRequestPtr& request);
+  void UnloadModel(const BackendRequestPtr& request);
 };

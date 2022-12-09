@@ -1,97 +1,53 @@
 #include "backend_engine.h"
 
 // #include "backend_op_execute.h"
+// #include "event/eventloop_libevent.h"
 #include "libtorch_engine.h"
 
-BackendEngineHandle::BackendEngineHandle(EventLoop* loop)
-    : EngineHandleBase(loop)
-{
-  RegisterService();
-}
+// BackendEngineHandle::BackendEngineHandle(muduo::net::EventLoop* loop)
+//     : loop_(loop)
+// {
+//   LOG_TRITON_VERBOSE("BackendEngineHandle::BackendEngineHandle");
+// }
 
-void
-BackendEngineHandle::ThreadInit(EventLoop* loop)
-{
-}
+// void
+// BackendEngineHandle::ThreadInit(muduo::net::EventLoop* loop)
+// {
+//   auto* loop_handle = loop->GetLoopHandle();
+//   auto* handle = reinterpret_cast<BackendEngineHandle*>(loop_handle);
+//   handle->RegisterService();
+//   LOG_TRITON_VERBOSE("BackendEngineHandle::ThreadInit");
+// }
 
-void
-BackendEngineHandle::RegisterService()
-{
-  //   op_registry_.RegisterOp(
-  //       BackendOpTypeToString(BackendOpType::kLoad),
-  //       CREATE_INS(BackendOpLoad));
-  // op_registry_.RegisterOp(
-  //     BackendOpTypeToString(BackendOpType::kUnload),
-  //     CREATE_INS(BackendOpUnload));
-  //   op_registry_.RegisterOp(
-  //       BackendOpTypeToString(BackendOpType::kExecute),
-  //       CREATE_INS(BackendOpExecute));
-}
+// void
+// BackendEngineHandle::RegisterService()
+// {
+//   op_manager_ = std::make_shared<BackendOpManager>(loop_);
+//   LOG_TRITON_VERBOSE("BackendEngineHandle::RegisterService");
+// }
 
 
-void
-BackendEngineHandle::DispachRequest(const RequestPtr& request)
-{
-  auto* handle = reinterpret_cast<BackendEngineHandle*>(loop_->GetLoopHandle());
-  auto backend_request = std::static_pointer_cast<BackendOpRequest>(request);
-  switch (backend_request->op_type) {
-    case BackendOpType::kLoad:
-      loop_->RunInLoop(
-          SELF_BIND_ARGS(BackendEngineHandle, LoadModel, backend_request));
-      break;
-    case BackendOpType::kUnload:
-      loop_->RunInLoop(
-          SELF_BIND_ARGS(BackendEngineHandle, UnloadModel, backend_request));
-      break;
-    case BackendOpType::kExecute:
-      loop_->RunInLoop(
-          SELF_BIND_ARGS(BackendEngineHandle, ExecuteModel, backend_request));
-      break;
-    default:
-      break;
-  }
-  //   auto op_creator =
-  //       op_registry_.GetOp(BackendOpTypeToString(backend_request->op_type));
-  //   auto op = op_creator(loop_);
-  //   op->SendRequest(backend_request);
-}
+// void
+// BackendEngineHandle::DispachRequest(const BackendRequestPtr& request)
+// {
+//   // auto backend_request =
+//   std::static_pointer_cast<BackendOpRequest>(request);
+//   LOG_TRITON_VERBOSE("BackendEngineHandle::DispachRequest");
+//   switch (request->op_type) {
+//     case BackendOpType::kLoad:
+//       op_manager_->LoadModel(request);
+//       break;
+//     case BackendOpType::kUnload:
+//       op_manager_->UnloadModel(request);
+//       break;
+//     case BackendOpType::kExecute:
+//       op_manager_->ExecuteModel(request);
+//       break;
+//     default:
+//       break;
+//   }
+// }
 
-void
-BackendEngineHandle::ExecuteModel(const BackendRequestPtr& request)
-{
-  auto exec_request = std::static_pointer_cast<BackendExecuteRequest>(request);
-  exec_request->process_requests_cb();
-  // notify triton that the request is finished
-  exec_request->mutex->unlock();
-  exec_request->cv->notify_all();
-  // no call back to memory management needed.
-}
-
-void
-BackendEngineHandle::LoadModel(const BackendRequestPtr& request)
-{
-  auto load_request = std::static_pointer_cast<BackendLoadRequest>(request);
-  load_request->node->SetDevice(load_request->target_device);
-  // no call back to memory management needed. since memory allocation already
-  // registered.
-}
-
-void
-BackendEngineHandle::UnloadModel(const BackendRequestPtr& request)
-{
-  auto unload_request = std::static_pointer_cast<BackendUnloadRequest>(request);
-  unload_request->node->SetDevice(unload_request->target_device);
-  // callback is needed to memory management to unblock load of other models.
-
-  auto unload_response = std::make_shared<BackendUnloadResponse>();
-  unload_response->node = unload_request->node;
-  unload_response->target_device = unload_request->target_device;
-
-
-  unload_request->cb(unload_response);
-  // auto* loop = unload_request->handle->GetLoop();
-  // loop->RunInLoop(std::bind(unload_request->cb, unload_response));
-}
 
 // BackendEngineImpl::BackendEngineImpl()
 //     : EngineImplBase(
@@ -104,10 +60,77 @@ BackendEngineHandle::UnloadModel(const BackendRequestPtr& request)
 
 BackendEngine::BackendEngine()
 {
-  loop_thread_ = std::make_shared<EventLoopThread>(
-      CREATE_INS(BackendEngineHandle), INIT_INS(BackendEngineHandle),
-      "BackendEngine");
-  loop_ = loop_thread_->StartLoop();
+  // loop_ = new muduo::net::EventLoop(
+  //     CREATE_INS(BackendEngineHandle), INIT_INS(BackendEngineHandle),
+  //     "BackendEngine");
+  // loop_->Start();
+  loop_thread_ = std::make_shared<muduo::net::EventLoopThread>(
+      INIT_INS(BackendEngine), "BackendEngine");
+  LOG_TRITON_VERBOSE("BackendEngine::BackendEngine");
+  loop_ = loop_thread_->startLoop();
+  LOG_TRITON_VERBOSE("BackendEngine::BackendEngine");
+  op_manager_ = std::make_shared<BackendOpManager>(loop_);
 }
 
 BackendEngine::~BackendEngine() {}
+
+// void
+// BackendEngine::RequestInLoop(const RequestPtr& request)
+// {
+//   auto* handle =
+//   reinterpret_cast<BackendEngineHandle*>(loop_->GetLoopHandle());
+//   handle->DispachRequest(request);
+//   // auto task = std::bind(&BackendEngineHandle::DispachRequest, handle,
+//   request);
+//   // loop_->RunInLoop(task);
+// }
+
+void
+BackendEngine::ProcessRequest(const BackendRequestPtr& request)
+{
+  // auto* handle =
+  // reinterpret_cast<BackendEngineHandle*>(loop_->GetLoopHandle());
+  // LOG_TRITON_VERBOSE(("BackendEngine::ProcessRequest " +
+  //              std::to_string((int)request->op_type) + " " +
+  //              std::to_string(handle->GetWeight()) + " " +
+  //              std::to_string(handle->GetRefs()))
+  //                 .c_str());
+  // loop_->queueInLoop(
+  //     std::bind(&BackendEngineHandle::DispachRequest, handle, request));
+  // // handle->DispachRequest(request);
+  loop_->runInLoop(
+      SELF_BIND_ARGS(BackendEngine, ProcessRequestInLoop, request));
+}
+
+void
+BackendEngine::ProcessRequestInLoop(const BackendRequestPtr& request)
+{
+  // auto* handle =
+  // reinterpret_cast<BackendEngineHandle*>(loop_->GetLoopHandle());
+  // LOG_TRITON_VERBOSE(("BackendEngine::ProcessRequestInLoop " +
+  //                     std::to_string((int)request->op_type) + " " +
+  //                     std::to_string(handle->GetWeight()) + " " +
+  //                     std::to_string(handle->GetRefs()))
+  //                        .c_str());
+  DispachRequest(request);
+}
+
+void
+BackendEngine::DispachRequest(const BackendRequestPtr& request)
+{
+  // auto backend_request = std::static_pointer_cast<BackendOpRequest>(request);
+  LOG_TRITON_VERBOSE("BackendEngineHandle::DispachRequest");
+  switch (request->op_type) {
+    case BackendOpType::kLoad:
+      op_manager_->LoadModel(request);
+      break;
+    case BackendOpType::kUnload:
+      op_manager_->UnloadModel(request);
+      break;
+    case BackendOpType::kExecute:
+      op_manager_->ExecuteModel(request);
+      break;
+    default:
+      break;
+  }
+}

@@ -6,10 +6,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <queue>
+
+// #include "memory_controller.h"
+
 void
 NodeFlow::AddPrevNode(const NodeFlowPtr& prev_node)
 {
-  prev_node->AddNextNode(SELF(NodeFlow));
+  // prev_node->AddNextNode(SELF(NodeFlow));
   prev_nodes_.emplace(std::make_pair(prev_node->GetNodeID(), prev_node));
 }
 
@@ -18,14 +22,27 @@ void
 NodeFlow::AddNextNode(const NodeFlowPtr& next_node)
 {
   // auto next_node = std::make_shared<NodeFlow>(node);
-  next_nodes_.insert({next_node->GetNodeID(), next_node});
-  next_node->AddPrevNode(SELF(NodeFlow));
+  next_nodes_.emplace(std::make_pair(next_node->GetNodeID(), next_node));
+  // next_node->AddPrevNode(SELF(NodeFlow));
   //   if (!result.second) {
   //     result.first->second->visit_cnt++;
   //   }
   // return result.first->second;
 }
 
+
+void
+NodeTopology::AddPrevNode(const NodeTopologyPtr& prev_node)
+{
+  prev_nodes_.emplace(std::make_pair(prev_node->GetNodeID(), prev_node));
+}
+
+
+void
+NodeTopology::AddNextNode(const NodeTopologyPtr& next_node)
+{
+  next_nodes_.emplace(std::make_pair(next_node->GetNodeID(), next_node));
+}
 
 // void
 // NodeFlow::RemoveNextNode(const NodeFlowPtr& next_node)
@@ -50,124 +67,92 @@ NodeFlow::DereferenceNode(const NodeMetaPtr& node_meta)
 }
 
 void
-FlowController::RecordNodeFlow(
-    const std::string& request_id, const DAGNodePtr& node,
-    const NodeMetaPtr& node_meta)
+FlowControllerFactory::PutNodeTopology(
+    const std::uint64_t& correlation_id, const DAGNodePtr& node)
 {
-  //   std::lock_guard<std::mutex> lock(mutex_);
-  auto hash_id = std::hash<std::string>{}(request_id);
-  auto current_node_flow = std::make_shared<NodeFlow>(node);
-  if (flow_graph_.find(node->GetNodeID()) == flow_graph_.end()) {
-    flow_graph_.insert({node->GetNodeID(), current_node_flow});
-  } else {
-    current_node_flow = flow_graph_[node->GetNodeID()];
-  }
-  auto node_meta_list = request_trace_.Get(hash_id);
-
-  if (node_meta_list != nullptr) {
-    LOG_VERBOSE((std::string("Request ") + std::to_string(hash_id) +
-                 std::string(" already exists, continue flow recording"))
-                    .c_str());
-    auto patent_node_flow = flow_graph_[node_meta_list->back()->node_id];
-
-    // add new node to the parent
-    current_node_flow->AddPrevNode(patent_node_flow);
-    patent_node_flow->AddNextNode(current_node_flow);
-    node_meta_list->push_back(current_node_flow->GetNodeMeta());
-  } else {
-    LOG_VERBOSE((std::string("Request ") + std::to_string(hash_id) +
-                 std::string(" does not exist, start flow recording"))
-                    .c_str());
-    std::shared_ptr<NodeMetaPtrList> meta_list(new NodeMetaPtrList());
-    auto del_list = request_trace_.Put(hash_id, meta_list);
-
-    // keep the child node updated by decreasing the reference count
-    if (del_list != nullptr) {
-      LOG_VERBOSE(
-          (std::string("Request ") + std::to_string(hash_id) +
-           std::string(" cause a deletion of the previous flow of size ") +
-           std::to_string(del_list->size()))
-              .c_str());
-      for (auto& node_meta : *del_list) {
-        // decrease the parent's children_visited
-        flow_graph_[node_meta->node_id]->DereferenceNode(node_meta);
-        // for (auto& parent : flow_graph_[node_meta->node_id]GetNode) {
-        //   parent.second->RemoveNextNode(flow_graph_[node_meta->node_id]);
-        // }
+  std::uint64_t high_corr_id =
+      correlation_id >> 32;  // For childs in the same level
+  std::uint64_t low_corr_id =
+      correlation_id & 0xFFFFFFFF;  // For model inference pipeline
+  if (visited_.find(correlation_id) == visited_.end()) {
+    visited_.insert(correlation_id);
+    visited_.insert(low_corr_id);
+    auto cur_node_topology =
+        std::make_shared<NodeTopology>(node, correlation_id);
+    topology_.insert({cur_node_topology->GetNodeID(), cur_node_topology});
+    if (root_ == nullptr) {
+      root_ = cur_node_topology;
+    } else {
+      for (auto& node_topology : topology_) {
+        // auto node_id = node_topology.first;
+        auto node_topology_ptr = node_topology.second;
+        auto prev_corr_id =
+            (high_corr_id == 0) ? (low_corr_id - 1) : low_corr_id;
+        if (node_topology_ptr->GetCorrelationID() == prev_corr_id) {
+          node_topology_ptr->AddNextNode(cur_node_topology);
+          cur_node_topology->AddPrevNode(node_topology_ptr);
+        }
       }
     }
   }
-
-  *(current_node_flow->GetNodeMeta()) += *node_meta;
-
-  // // update model graph
-  // auto model_id = node->GetNodeID();
-  // if (flow_graph_.find(model_id) == flow_graph_.end()) {
-  //   flow_graph_[model_id] = node;
-  // }
-  LOG_VERBOSE((std::string("Request ") + std::to_string(hash_id) +
-               std::string(" has ") + std::to_string(request_trace_.Size()) +
-               std::string(" flows"))
-                  .c_str());
 }
 
-
-ModelProbabilityVec
-FlowController::GetChildernProbability(const DAGNodePtr& node)
+NodeTopologyPtr
+FlowControllerFactory::GetNodeTopology(const NodeID& node_id)
 {
-  // std::lock_guard<std::mutex> lock(mutex_);
-  ModelProbabilityVec children_prob;
-  auto node_flow = flow_graph_[node->GetNodeID()];
-  for (auto& child : node_flow->GetNextNodes()) {
-    auto child_node = child.second->GetNode();
-    auto child_node_meta = child.second->GetNodeMeta();
-    children_prob.push_back(std::make_pair(
-        child_node,
-        child_node_meta->input_size_cnt / child_node_meta->visit_cnt));
+  if (topology_.find(node_id) == topology_.end()) {
+    return nullptr;
+  } else {
+    return topology_[node_id];
   }
-  // // normalize the probability
-  // double sum = 0;
-  // for (auto& prob : children_prob) {
-  //   sum += prob.second;
-  // }
-  // for (auto& prob : children_prob) {
-  //   prob.second /= sum;
-  // }
-  sort(children_prob.begin(), children_prob.end(), sortbysec<DAGNodePtr>);
-  return children_prob;
+}
+
+NodePtrList
+FlowControllerFactory::GetNodesByFilter(
+    const NodeFilterFunc& filter_func, const NodeID& node_id)
+{
+  NodePtrList nodes;
+  if (topology_.find(node_id) == topology_.end()) {
+    LOG_TRITON_VERBOSE(
+        ("Node " + std::to_string(node_id) + " not found").c_str());
+    return nodes;
+  } else {
+    auto node_topology = topology_[node_id];
+    std::queue<NodeTopologyPtr> node_queue;
+    node_queue.push(node_topology);
+    while (!node_queue.empty()) {
+      auto cur_node_topology = node_queue.front();
+      node_queue.pop();
+      if (filter_func(cur_node_topology->GetNode())) {
+        nodes.push_back(cur_node_topology->GetNode());
+      }
+      for (auto& next_node : cur_node_topology->GetNextNodes()) {
+        node_queue.push(next_node.second);
+      }
+    }
+    return nodes;
+  }
 }
 
 void
-FlowController::RecursivelyUpdateProbability(
-    const NodeFlowPtr& node_flow, ModelProbabilityVec& prob_map)
+FlowControllerFactory::DispatchNodeMemoryInThread(
+    const DAGNodePtr& node, const Device& device)
 {
-  if (node_flow->GetNextNodes().size() == 0) {
-    return;
-  }
-  for (auto& child : node_flow->GetNextNodes()) {
-    auto child_node_flow = child.second;
-    auto child_node_meta = child.second->GetNodeMeta();
-    auto child_node = child_node_flow->GetNode();
-    // if (prob_map.find(child_id) == prob_map.end()) {
-    //   prob_map[child_id] = 0;
-    // }
-    // prob_map[child_id] += child_node->visit_cnt;
-    prob_map.push_back(std::make_pair(
-        child_node,
-        child_node_meta->input_size_cnt / child_node_meta->visit_cnt));
-    RecursivelyUpdateProbability(child.second, prob_map);
-  }
-  
+  std::thread t(&FlowControllerFactory::DispatchNodeMemory, this, node, device);
+  t.detach();
 }
 
-ModelProbabilityVec
-FlowController::GetTreeProbability(const DAGNodePtr& node)
+void
+FlowControllerFactory::DispatchNodeMemory(
+    const DAGNodePtr& node, const Device& device)
 {
-  // std::lock_guard<std::mutex> lock(mutex_);
+  node->SetDevice(device);
+  if (device == CPU_DEVICE || device == DISK_DEVICE) {
+    node->SetMemoryType(MemoryType::kStandBy);
+  }
 
-  ModelProbabilityVec tree_prob;
-  auto node_flow = flow_graph_[node->GetNodeID()];
-  RecursivelyUpdateProbability(node_flow, tree_prob);
-  sort(tree_prob.begin(), tree_prob.end(), sortbysec<DAGNodePtr>);
-  return tree_prob;
+  if (device == DEFAULT_CUDA_DEVICE &&
+      node->GetMemoryType() != MemoryType::kLocked) {
+    node->SetMemoryType(MemoryType::kReady);
+  }
 }

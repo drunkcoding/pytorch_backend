@@ -39,7 +39,7 @@ GetFreeSystemMemory()
 
   // This is some how hacky, but _SC_AVPHYS_PAGES does not give us cached memory
   // This assume that we are the only one using the system memory
-  return GetTotalSystemMemory() * 0.7;
+  return GetTotalSystemMemory() * 0.8;
 
   // FILE* meminfo = fopen("/proc/meminfo", "r");
   // if (meminfo == NULL)

@@ -46,6 +46,21 @@ option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHTRT "Enable TorchTRT support" OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" ON)
+option(TRITON_ENABLE_DEEPSPEED_CONTROLLER "Enable Torchvision support" OFF)
+option(TRITON_ENABLE_COUNTER_CONTROLLER "Enable Torchvision support" OFF)
+option(TRITON_ENABLE_PREFETCH_CONTROLLER "Enable Torchvision support" OFF)
+
+if (TRITON_ENABLE_DEEPSPEED_CONTROLLER)
+  add_compile_definitions(ENABLE_DEEPSPEED_FLOW_CONTROLLER)
+endif()
+
+if (TRITON_ENABLE_COUNTER_CONTROLLER)
+  add_compile_definitions(ENABLE_COUNTER_FLOW_CONTROLLER)
+endif()
+
+if (TRITON_ENABLE_PREFETCH_CONTROLLER)
+  add_compile_definitions(ENABLE_PREFETCH_FLOW_CONTROLLER)
+endif()
 
 set(TRITON_PYTORCH_DOCKER_IMAGE "" CACHE STRING "Docker image containing the PyTorch build required by backend.")
 set(TRITON_PYTORCH_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
@@ -114,6 +129,12 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
   GIT_SHALLOW ON
 )
+# FetchContent_Declare(
+#   muduo
+#   GIT_REPOSITORY https://github.com/chenshuo/muduo.git
+#   GIT_TAG v2.0.2
+#   GIT_SHALLOW ON
+# )
 
 # FetchContent_GetProperties(magic_enum)
 # if (NOT magic_enum_POPULATED)
@@ -265,14 +286,17 @@ if(${TRITON_PYTORCH_DOCKER_BUILD})
   )
 endif() # TRITON_PYTORCH_DOCKER_BUILD
 
-file(GLOB EVENT_SRC src/event/*.cc)
-file(GLOB BASE_SRC src/base/*.cc)
+# add_subdirectory(uevent)
+set(MUDUO_TOP_DIR $ENV{HOME}/muduo)
+include_directories(${MUDUO_TOP_DIR})
+link_directories(${MUDUO_TOP_DIR}/build/lib)
+# link_directories(${CMAKE_CURRENT_SOURCE_DIR}/uevent/build)
+# link_directories(${CMAKE_CURRENT_SOURCE_DIR}/uevent/base/build)
+
 file(GLOB UTILS_SRC src/utils/*.cc)
 file(GLOB DATAFLOW_SRC src/dataflow/*.cc)
 file(GLOB ENGINE_SRC src/engine/*.cc)
 
-file(GLOB EVENT_INC src/event/*.h)
-file(GLOB BASE_INC src/base/*.h)
 file(GLOB UTILS_INC src/utils/*.h)
 file(GLOB DATAFLOW_INC src/dataflow/*.h)
 file(GLOB ENGINE_INC src/engine/*.h)
@@ -293,10 +317,6 @@ add_library(
   src/model_state.cc
   src/model_instance_state.h
   src/model_instance_state.cc
-  ${EVENT_SRC}
-  ${BASE_SRC}
-  ${EVENT_INC}
-  ${BASE_INC}
   ${UTILS_SRC}
   ${UTILS_INC}
   ${DATAFLOW_SRC}
@@ -313,8 +333,8 @@ target_include_directories(
   triton-pytorch-backend
   PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/event
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/base
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  # ${CMAKE_CURRENT_SOURCE_DIR}/uevent/base
   ${Python3_INCLUDE_DIRS}
 )
 
@@ -428,6 +448,10 @@ target_link_libraries(
   triton-backend-utils # from repo-backend
   ${TRITON_PYTORCH_LDFLAGS}
   ${TRITON_PYTORCH_LIBS}
+  # uevent
+  # uevent_base
+  muduo_base
+  muduo_net
   event
 )
 

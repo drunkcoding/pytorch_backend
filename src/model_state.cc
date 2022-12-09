@@ -3,6 +3,8 @@
 // #include "dataflow/dag_registry.h"
 #include "libtorch_utils.h"
 #include "triton/backend/backend_model_instance.h"
+#include "utils/memory_utils.h"
+#include "utils/log_utils.h"
 
 namespace triton { namespace backend { namespace pytorch {
 
@@ -91,7 +93,15 @@ ModelState::LoadModel(
   torch::InferenceMode infer_guard(EnabledInferenceMode());
 
   // Create a new torch model as DAG node
+  auto memory_start = GetFreeSystemMemory();
   *node = std::make_shared<DAGNode>(*model_path, Name(), Version());
+  auto memory_end = GetFreeSystemMemory();
+  auto memory_diff = memory_end - memory_start;
+  LOG_TRITON_VERBOSE((std::string("Memory used to load model: ") +
+                      std::to_string(memory_diff / MB) +
+                      std::string("MB. File Size: ") +
+                      std::to_string((*node)->GetNodeByteSize() / MB) + "MB")
+                         .c_str());
   // GET_INSTANCE(DAGRegistry)->AddNode((*node)->GetNodeID(), *node);
   // // Allocate Memory on Management Memory Pool
   // auto request = std::make_shared<MemoryManageRequest>(
@@ -99,74 +109,13 @@ ModelState::LoadModel(
   // GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(request);
 
   *torch_model = MODULE_PTR_NODELETE((*node)->GetModel());
+  LOG_TRITON_VERBOSE((std::string("TorchScript model loaded from ") +
+                      *model_path + " for model instance '" + Name() + "'")
+                         .c_str());
 
-  // RETURN_IF_ERROR(
-  //     GET_INSTANCE(LibTorchPool)->RegisterModule(*model_path, Name(),
-  //     Version()));
-
-  // // If the model is not already loaded, load it.
-  // auto start_time = std::chrono::steady_clock::now();
-  // RETURN_IF_ERROR(GET_INSTANCE(LibTorchPool)->FetchModule(Name(), Version(),
-  // device)); auto end_time = std::chrono::steady_clock::now(); LOG_MESSAGE(
-  //     TRITONSERVER_LOG_VERBOSE,
-  //     (std::string("TorchScript model load time: ") +
-  //      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-  //                         end_time - start_time)
-  //                         .count()) +
-  //      " usec")
-  //         .c_str());
-
-
-  // *torch_model = GET_INSTANCE(LibTorchPool)->GetModule(Name(), Version());
   TRITONSERVER_Message* model_config_message;
   RETURN_IF_ERROR(TRITONBACKEND_ModelConfig(
       triton_model_, 1 /* config_version */, &model_config_message));
-
-  //
-  // // If weight sharing is enabled, skip loading model if
-  // // it is already available on the target device
-  // std::pair<bool, int> device_pair;
-  // if (enable_weight_sharing_) {
-  //   device_pair = std::make_pair(!device.is_cpu(), device.index());
-  //   auto mit = torch_models_.find(device_pair);
-  //   if (mit != torch_models_.end()) {
-  //     *torch_model = mit->second;
-  //     LOG_MESSAGE(
-  //         TRITONSERVER_LOG_INFO,
-  //         (std::string("Reusing TorchScript model for instance '") + Name() +
-  //          "'")
-  //             .c_str());
-  //     return nullptr;  // success
-  //   }
-  // }
-
-  // // Serialize the torch model to string
-  // std::string model_data_str;
-  // RETURN_IF_ERROR(ReadTextFile(*model_path, &model_data_str));
-
-  // try {
-  //   std::istringstream model_stream(model_data_str);
-  //   torch_model->reset(
-  //       new torch::jit::Module(torch::jit::load(model_stream, device)));
-  // }
-  // catch (const std::exception& ex) {
-  //   return TRITONSERVER_ErrorNew(
-  //       TRITONSERVER_ERROR_INTERNAL,
-  //       ("failed to load model '" + Name() + "': " + ex.what()).c_str());
-  // }
-
-  // if (enable_weight_sharing_) {
-  //   if (!((torch_models_.emplace(device_pair, *torch_model)).second)) {
-  //     std::string type = device.is_cpu() ? "CPU" : "GPU";
-  //     LOG_MESSAGE(
-  //         TRITONSERVER_LOG_WARN,
-  //         (std::string("Model already found on target ") + type + " device "
-  //         +
-  //          "(id " + std::to_string(device.index()) + ") for '" + Name() +
-  //          "'")
-  //             .c_str());
-  //   }
-  // }
 
   return nullptr;  // success
 }
@@ -327,31 +276,31 @@ ModelState::ParseParameters()
               .c_str());
     }
 
-    // TODO Re-enable NvFuser once fixed
-    // If 'ENABLE_NVFUSER' is not present in 'parameters' then no
-    // update is made to 'enable_nvfuser'.
-    bool enable_nvfuser = false;
-    err = ParseParameter(params, "ENABLE_NVFUSER", &enable_nvfuser);
-    if (err != nullptr) {
-      if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
-        return err;
-      } else {
-        LOG_MESSAGE(
-            TRITONSERVER_LOG_INFO, (std::string("NvFuser is not specified") +
-                                    " for model instance '" + Name() + "'")
-                                       .c_str());
-        TRITONSERVER_ErrorDelete(err);
-      }
-    } else {
-      // Override, disable NvFuser till fixed
-      enable_nvfuser = false;
-      enable_nvfuser_pair_ = {true, enable_nvfuser};
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_WARN, (std::string("NvFuser is ") +
-                                  (enable_nvfuser ? "enabled" : "disabled") +
-                                  " for model instance '" + Name() + "'")
-                                     .c_str());
-    }
+    // // TODO Re-enable NvFuser once fixed
+    // // If 'ENABLE_NVFUSER' is not present in 'parameters' then no
+    // // update is made to 'enable_nvfuser'.
+    // bool enable_nvfuser = false;
+    // err = ParseParameter(params, "ENABLE_NVFUSER", &enable_nvfuser);
+    // if (err != nullptr) {
+    //   if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+    //     return err;
+    //   } else {
+    //     LOG_MESSAGE(
+    //         TRITONSERVER_LOG_INFO, (std::string("NvFuser is not specified") +
+    //                                 " for model instance '" + Name() + "'")
+    //                                    .c_str());
+    //     TRITONSERVER_ErrorDelete(err);
+    //   }
+    // } else {
+    //   // Override, disable NvFuser till fixed
+    //   enable_nvfuser = false;
+    //   enable_nvfuser_pair_ = {true, enable_nvfuser};
+    //   LOG_MESSAGE(
+    //       TRITONSERVER_LOG_WARN, (std::string("NvFuser is ") +
+    //                               (enable_nvfuser ? "enabled" : "disabled") +
+    //                               " for model instance '" + Name() + "'")
+    //                                  .c_str());
+    // }
   }
 
   return nullptr;

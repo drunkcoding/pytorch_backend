@@ -4,15 +4,15 @@
 
 #include <atomic>
 
-#include "eventloop.h"
+#include "muduo/net/EventLoop.h"
 
 class LoopHandle {
  public:
   LoopHandle() : weight_(0), refs_(0) {}
 
-  EventLoop* GetLoop() { return loop_; }
+  muduo::net::EventLoop* GetLoop() { return loop_; }
 
-  void SetLoop(EventLoop* loop)
+  void SetLoop(muduo::net::EventLoop* loop)
   {
     loop_ = loop;
     return;
@@ -32,10 +32,9 @@ class LoopHandle {
   }
 
  protected:
-  EventLoop* loop_;
+  muduo::net::EventLoop* loop_;
 
  private:
   std::atomic<uint64_t> weight_;
   std::atomic<int32_t> refs_;
 };
-

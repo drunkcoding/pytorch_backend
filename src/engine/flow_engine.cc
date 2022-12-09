@@ -6,80 +6,108 @@
 #include "utils/class_utils.h"
 
 
-FlowEngineHandle::FlowEngineHandle(EventLoop* loop)
-    : EngineHandleBase(loop)
+// FlowEngineHandle::FlowEngineHandle(muduo::net::EventLoop* loop) : loop_(loop)
+// {
+//   LOG_TRITON_VERBOSE("FlowEngineHandle::FlowEngineHandle");
+// }
+
+// void
+// FlowEngineHandle::ThreadInit(muduo::net::EventLoop* loop)
+// {
+//   auto* loop_handle = loop->GetLoopHandle();
+//   auto* handle = reinterpret_cast<FlowEngineHandle*>(loop_handle);
+//   handle->RegisterService();
+//   LOG_TRITON_VERBOSE("FlowEngineHandle::ThreadInit");
+// }
+
+// void
+// FlowEngineHandle::RegisterService()
+// {
+//   op_manager_ = std::make_shared<FlowOpManager>(loop_);
+// }
+
+
+// void
+// FlowEngineHandle::DispachRequest(const FlowOpRequestPtr& request)
+// {
+//   // auto* handle =
+//   reinterpret_cast<FlowEngineHandle*>(loop_->GetLoopHandle());
+//   // auto flow_request = std::static_pointer_cast<FlowOpRequest>(request);
+//   switch (request->op_type) {
+//     case FlowOpType::kRecord:
+//       op_manager_->RecordNode(request);
+//       break;
+//     case FlowOpType::kPrefetch:
+//       op_manager_->PrefetchNode(request);
+//       break;
+//     default:
+//       break;
+//   }
+// }
+
+/* ================== Engine ================== */
+
+FlowEngine::FlowEngine()
 {
-  RegisterService();
+  loop_thread_ = std::make_shared<muduo::net::EventLoopThread>(
+      INIT_INS(FlowEngine), "FlowEngine");
+  loop_ = loop_thread_->startLoop();
+  // loop_ = new muduo::net::EventLoop(
+  //     CREATE_INS(FlowEngineHandle), INIT_INS(FlowEngineHandle),
+  //     "FlowEngine");
+  // loop_->Start();
+  op_manager_ = std::make_shared<FlowOpManager>(loop_);
+}
+
+FlowEngine::~FlowEngine()
+{
+  // loop_thread_->StopLoop();
+  // delete loop_;
 }
 
 void
-FlowEngineHandle::ThreadInit(EventLoop* loop)
+FlowEngine::ProcessRequest(const FlowOpRequestPtr& request)
 {
+  LOG_TRITON_VERBOSE("FlowEngine::ProcessRequest");
+  auto task = SELF_BIND_ARGS(FlowEngine, ProcessRequestInLoop, request);
+  loop_->runInLoop(task);
 }
 
 void
-FlowEngineHandle::RegisterService()
+FlowEngine::ProcessRequestInLoop(const FlowOpRequestPtr& request)
 {
+  LOG_TRITON_VERBOSE("FlowEngine::ProcessRequestInLoop");
+  // auto* handle = reinterpret_cast<FlowEngineHandle*>(loop_->GetLoopHandle());
+  // LOG_TRITON_VERBOSE(("FlowEngine::ProcessRequestInLoop " +
+  //              std::to_string((int)request->op_type) + " " +
+  //              std::to_string(handle->GetWeight()) + " " +
+  //              std::to_string(handle->GetRefs()))
+  //                 .c_str());
+  DispachRequest(request);
 }
 
-
 void
-FlowEngineHandle::DispachRequest(const RequestPtr& request)
+FlowEngine::DispachRequest(const FlowOpRequestPtr& request)
 {
-  auto* handle = reinterpret_cast<FlowEngineHandle*>(loop_->GetLoopHandle());
-  auto flow_request = std::static_pointer_cast<FlowOpRequest>(request);
-  switch (flow_request->op_type) {
+  // auto* handle = reinterpret_cast<FlowEngineHandle*>(loop_->GetLoopHandle());
+  // auto flow_request = std::static_pointer_cast<FlowOpRequest>(request);
+  switch (request->op_type) {
     case FlowOpType::kRecord:
-      loop_->RunInLoop(
-          SELF_BIND_ARGS(FlowEngineHandle, RecordNode, flow_request));
+      op_manager_->RecordNode(request);
       break;
     case FlowOpType::kPrefetch:
-      loop_->RunInLoop(
-          SELF_BIND_ARGS(FlowEngineHandle, PrefetchNode, flow_request));
+      op_manager_->PrefetchNode(request);
       break;
     default:
       break;
   }
 }
 
-void
-FlowEngineHandle::RecordNode(const FlowOpRequestPtr& request)
-{
-  auto record_request = std::static_pointer_cast<FlowRecordRequest>(request);
-  GET_INSTANCE(FlowController)
-      ->RecordNodeFlow(
-          record_request->request_id, record_request->node,
-          record_request->node_meta);
 
-  auto prefetch_request = std::make_shared<FlowPrefetchRequest>();
-  prefetch_request->node = record_request->node;
-  prefetch_request->handle = record_request->handle;
-  loop_->QueueInLoop(SELF_BIND_ARGS(FlowEngineHandle, PrefetchNode, request));
-}
-void
-FlowEngineHandle::PrefetchNode(const FlowOpRequestPtr& request)
-{
-  auto prefetch_request =
-      std::static_pointer_cast<FlowPrefetchRequest>(request);
-  auto prob_vec =
-      GET_INSTANCE(FlowController)->GetTreeProbability(prefetch_request->node);
-
-
-  for (std::size_t i = 0; i < prob_vec.size() && i < 10; i++) {
-    auto libtorch_request = std::make_shared<LibtorchPrefetchRequest>();
-    libtorch_request->node = prob_vec[i].first;
-    libtorch_request->handle = prefetch_request->handle;
-    GET_INSTANCE(LibtorchEngine)->RequestInLoop(libtorch_request);
-  }
-}
-
-/* ================== Engine ================== */
-
-FlowEngine::FlowEngine()
-{
-  loop_thread_ = std::make_shared<EventLoopThread>(
-      CREATE_INS(FlowEngineHandle), INIT_INS(FlowEngineHandle), "FlowEngine");
-  loop_ = loop_thread_->StartLoop();
-}
-
-FlowEngine::~FlowEngine() {}
+// void
+// FlowEngine::RequestInLoop(const RequestPtr& request)
+// {
+//   auto* handle = reinterpret_cast<FlowEngineHandle*>(loop_->GetLoopHandle());
+//   auto task = std::bind(&FlowEngineHandle::DispachRequest, handle, request);
+//   loop_->RunInLoop(task);
+// }

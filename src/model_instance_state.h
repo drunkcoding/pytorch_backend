@@ -4,7 +4,7 @@
 
 #include "dataflow/dag_node.h"
 #include "engine/backend_engine.h"
-#include "eventloop_thread.h"
+// #include "eventloop_thread.h"
 #include "model_state.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
@@ -105,7 +105,7 @@ class ModelInstanceState
 //   std::condition_variable exec_cv_;
   torch::Device device_;
 
-  // EventLoop base programming
+  // muduo::net::EventLoop base programming
   BackendEngine engine_;
 
   // Map from configuration name for an input to the index of
