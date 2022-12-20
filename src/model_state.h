@@ -2,9 +2,9 @@
 
 #include <torch/script.h>
 
-#include "dataflow/dag_node.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_model.h"
+#include "utils/topology.h"
 
 namespace triton { namespace backend { namespace pytorch {
 
@@ -26,8 +26,8 @@ class ModelState : public BackendModel {
   // representing the model.
   TRITONSERVER_Error* LoadModel(
       const std::string& artifact_name, const torch::Device device,
-      std::string* model_path, std::shared_ptr<torch::jit::script::Module>* torch_model,
-      DAGNodePtr* node);
+      std::string* model_path,
+      std::shared_ptr<torch::jit::script::Module>* torch_model, NodePtr* node);
 
   bool EnabledOptimizedExecution() { return enable_optimized_execution_; }
   const std::pair<bool, bool>& EnabledTensorExprFuser() const
@@ -51,8 +51,6 @@ class ModelState : public BackendModel {
 
   bool EnabledWeightSharing() { return enable_weight_sharing_; }
   const std::vector<std::string>& ModelOutputs() { return output_names_; }
-
-  //   DAGNodePtr GetDAGNode() const { return dag_node_; }
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -95,8 +93,6 @@ class ModelState : public BackendModel {
   // List of all the outputs specified in the output section of model
   // configuration.
   std::vector<std::string> output_names_;
-
-  //   DAGNodePtr dag_node_;
 };
 
 

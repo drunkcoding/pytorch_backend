@@ -2,7 +2,7 @@
 
 #include <torch/script.h>
 
-#include "dataflow/dag_node.h"
+#include "utils/topology.h"
 #include "engine/backend_engine.h"
 // #include "eventloop_thread.h"
 #include "model_state.h"
@@ -49,6 +49,8 @@ class ModelInstanceState
       TRITONBACKEND_Request** requests, const uint32_t request_count);
   void ProcessRequestsInLoop(
       TRITONBACKEND_Request** requests, const uint32_t request_count);
+
+//   void ProcessTritonRequest();
 
   // Clear CUDA cache
   void ClearCache();
@@ -100,13 +102,13 @@ class ModelInstanceState
 
   std::shared_ptr<torch::jit::script::Module> torch_model_;
   //   torch::jit::script::Module* torch_model_;
-  DAGNodePtr node_;
+  NodePtr node_;
   std::mutex exec_mutex_;
 //   std::condition_variable exec_cv_;
   torch::Device device_;
 
   // muduo::net::EventLoop base programming
-  BackendEngine engine_;
+  BackendEnginePtr engine_;
 
   // Map from configuration name for an input to the index of
   // that input in the model.

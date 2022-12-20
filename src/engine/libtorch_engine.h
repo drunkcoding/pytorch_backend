@@ -36,6 +36,7 @@ class LibtorchEngine : public std::enable_shared_from_this<LibtorchEngine> {
 
   static void ThreadInit(muduo::net::EventLoop* loop) {}
 
+  void Init();
   void ProcessRequest(const LibtorchRequestPtr& request);
   void ProcessRequestInLoop(const LibtorchRequestPtr& request);
 
@@ -47,4 +48,8 @@ class LibtorchEngine : public std::enable_shared_from_this<LibtorchEngine> {
   std::shared_ptr<muduo::net::EventLoopThread> loop_thread_;
   muduo::net::EventLoop* loop_;
   std::shared_ptr<LibtorchOpManager> op_manager_;
+  bool is_init_;
+  std::mutex mutex_;
 };
+
+static const std::shared_ptr<LibtorchEngine> kLibtorchEngine = std::make_shared<LibtorchEngine>();

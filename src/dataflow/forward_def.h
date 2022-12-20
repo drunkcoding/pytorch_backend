@@ -11,9 +11,6 @@ typedef std::shared_ptr<LibtorchEngine> LibtorchEnginePtr;
 class FlowEngine;
 typedef std::shared_ptr<FlowEngine> FlowEnginePtr;
 
-class DAGNode;
-typedef std::shared_ptr<DAGNode> DAGNodePtr;
-
 // struct OpRequest;
 // typedef std::shared_ptr<OpRequest> RequestPtr;
 // struct OpResponse;

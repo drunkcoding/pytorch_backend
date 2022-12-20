@@ -3,8 +3,8 @@
 // #include "dataflow/dag_registry.h"
 #include "libtorch_utils.h"
 #include "triton/backend/backend_model_instance.h"
-#include "utils/memory_utils.h"
 #include "utils/log_utils.h"
+#include "utils/memory_utils.h"
 
 namespace triton { namespace backend { namespace pytorch {
 
@@ -65,8 +65,11 @@ TRITONSERVER_Error*
 ModelState::LoadModel(
     const std::string& artifact_name, const torch::Device device,
     std::string* model_path,
-    std::shared_ptr<torch::jit::script::Module>* torch_model, DAGNodePtr* node)
+    std::shared_ptr<torch::jit::script::Module>* torch_model, NodePtr* node)
 {
+  LOG_TRITON_VERBOSE((std::string("Loading model from ") + artifact_name +
+                      " for model instance '" + Name() + "'")
+                         .c_str());
   // Find the TorchScript file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
   // use the default name ("model.pt").
@@ -94,21 +97,21 @@ ModelState::LoadModel(
 
   // Create a new torch model as DAG node
   auto memory_start = GetFreeSystemMemory();
-  *node = std::make_shared<DAGNode>(*model_path, Name(), Version());
+  *node = std::make_shared<Node>(*model_path);
   auto memory_end = GetFreeSystemMemory();
   auto memory_diff = memory_end - memory_start;
   LOG_TRITON_VERBOSE((std::string("Memory used to load model: ") +
                       std::to_string(memory_diff / MB) +
                       std::string("MB. File Size: ") +
-                      std::to_string((*node)->GetNodeByteSize() / MB) + "MB")
+                      std::to_string((*node)->byte_size / MB) + "MB")
                          .c_str());
-  // GET_INSTANCE(DAGRegistry)->AddNode((*node)->GetNodeID(), *node);
+  // GET_INSTANCE(DAGRegistry)->AddNode((*node)->id, *node);
   // // Allocate Memory on Management Memory Pool
   // auto request = std::make_shared<MemoryManageRequest>(
   //     node, CPU_DEVICE, ManageType::PREFETCH);
   // GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(request);
 
-  *torch_model = MODULE_PTR_NODELETE((*node)->GetModel());
+  *torch_model = MODULE_PTR_NODELETE((*node)->model);
   LOG_TRITON_VERBOSE((std::string("TorchScript model loaded from ") +
                       *model_path + " for model instance '" + Name() + "'")
                          .c_str());

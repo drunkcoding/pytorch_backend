@@ -1,7 +1,10 @@
 #include "backend_op.h"
+
 #include "utils/log_utils.h"
 
-BackendOpManager::BackendOpManager(muduo::net::EventLoop* loop) : OpBase(loop) {}
+BackendOpManager::BackendOpManager(muduo::net::EventLoop* loop) : OpBase(loop)
+{
+}
 
 BackendOpManager::~BackendOpManager() {}
 
@@ -15,7 +18,11 @@ BackendOpManager::ExecuteModel(const BackendRequestPtr& request)
   // notify triton that the request is finished
   exec_request->mutex->unlock();
   exec_request->cv->notify_all();
-  // no call back to memory management needed.
+  // send response here to switch back flags to ready
+  auto exec_response = std::make_shared<BackendExecuteResponse>();
+  exec_response->node = exec_request->node;
+
+  exec_request->cb(exec_response);
 }
 
 void

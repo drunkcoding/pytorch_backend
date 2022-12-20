@@ -8,15 +8,18 @@ class CounterFlowController : public FlowControllerFactory {
   DISABLE_COPY_AND_ASSIGN(CounterFlowController)
 
   void RecordNode(
-      const InputIDPtr& input_id, const DAGNodePtr& node,
+      const InputIDPtr& input_id, const NodePtr& node,
       const NodeMetaPtr& node_meta) override;
-  NodeMoveVec PrefetchNode(const DAGNodePtr& node) override;
+  NodeMoveVec PrefetchNode(const NodePtr& node) override;
 
  private:
   CounterFlowController() = default;
   virtual ~CounterFlowController() = default;
 
-  std::size_t total_visit_count_{0};
-  std::unordered_map<NodeID, std::size_t> visit_count_;
-  std::unordered_map<NodeID, std::size_t> visit_time_;
+  FilterResult GetStandbyChildByCount(const NodeID node_id, std::size_t size_limit);
+
+ private:
+  std::unordered_map<NodeID, Device> node_location_;
+  std::size_t free_cpu_memory_{0};
+  std::size_t free_gpu_memory_{0};
 };

@@ -9,20 +9,27 @@ class PrefetchFlowController : public FlowControllerFactory {
   DISABLE_COPY_AND_ASSIGN(PrefetchFlowController)
 
   void RecordNode(
-      const InputIDPtr& input_id, const DAGNodePtr& node,
+      const InputIDPtr& input_id, const NodePtr& node,
       const NodeMetaPtr& node_meta) override;
-  NodeMoveVec PrefetchNode(const DAGNodePtr& node) override;
+  NodeMoveVec PrefetchNode(const NodePtr& node) override;
 
-  //   ModelProbabilityVec GetChildernProbability(const DAGNodePtr& node);
-//   ModelProbabilityVec GetTreeProbability(const DAGNodePtr& node);
+  FilterResult GetStandbyChildByFreq(
+      const NodePtr& node, std::size_t size_limit);
+  //   ModelProbabilityVec GetTreeProbability(const NodePtr& node);
 
  private:
-  PrefetchFlowController() : request_trace_(100) {}
+  PrefetchFlowController() = default;
   virtual ~PrefetchFlowController() = default;
 
-//   void RecursivelyUpdateProbability(
-//       const NodeFlowPtr& node_flow, ModelProbabilityVec& prob_map);
+  //   void RecursivelyUpdateProbability(
+  //       const NodeFlowPtr& node_flow, ModelProbabilityVec& prob_map);
 
-  LRUCache<std::size_t, NodeMetaPtrList> request_trace_;
-//   std::unordered_map<std::size_t, NodeFlowPtr> flow_graph_;
+  std::unordered_map<std::size_t, std::size_t>
+      request_time_;  //<request_id, time>
+  std::unordered_map<std::size_t, StagePtr>
+      request_trace_;  //<request_id, node_id>
+  //   std::unordered_map<std::size_t, NodeFlowPtr> flow_graph_;
+  std::size_t free_cpu_memory_{0};
+  std::size_t free_gpu_memory_{0};
 };
+

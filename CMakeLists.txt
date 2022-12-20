@@ -28,6 +28,7 @@ cmake_minimum_required(VERSION 3.18)
 
 project(tritonpytorchbackend LANGUAGES C CXX)
 
+
 #
 # Options
 #
@@ -46,29 +47,16 @@ option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHTRT "Enable TorchTRT support" OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" ON)
-option(TRITON_ENABLE_DEEPSPEED_CONTROLLER "Enable Torchvision support" OFF)
-option(TRITON_ENABLE_COUNTER_CONTROLLER "Enable Torchvision support" OFF)
-option(TRITON_ENABLE_PREFETCH_CONTROLLER "Enable Torchvision support" OFF)
 
-if (TRITON_ENABLE_DEEPSPEED_CONTROLLER)
-  add_compile_definitions(ENABLE_DEEPSPEED_FLOW_CONTROLLER)
-endif()
-
-if (TRITON_ENABLE_COUNTER_CONTROLLER)
-  add_compile_definitions(ENABLE_COUNTER_FLOW_CONTROLLER)
-endif()
-
-if (TRITON_ENABLE_PREFETCH_CONTROLLER)
-  add_compile_definitions(ENABLE_PREFETCH_FLOW_CONTROLLER)
-endif()
+option(CONTROLLER_TYPE "for baseline test, deepspeed/counter/prefetch" "")
 
 set(TRITON_PYTORCH_DOCKER_IMAGE "" CACHE STRING "Docker image containing the PyTorch build required by backend.")
 set(TRITON_PYTORCH_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
 set(TRITON_PYTORCH_LIB_PATHS "" CACHE PATH "Paths to Torch libraries")
 
-set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
-set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
-set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
+set(TRITON_BACKEND_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/backend repo")
+set(TRITON_CORE_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/core repo")
+set(TRITON_COMMON_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/common repo")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -111,6 +99,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/triton-inference-server/common.git
   GIT_TAG ${TRITON_COMMON_REPO_TAG}
   GIT_SHALLOW ON
+  
 )
 FetchContent_Declare(
   repo-core
@@ -127,14 +116,9 @@ FetchContent_Declare(
 FetchContent_Declare(
   magic-enum
   GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
+  GIT_TAG v0.8.2
   GIT_SHALLOW ON
 )
-# FetchContent_Declare(
-#   muduo
-#   GIT_REPOSITORY https://github.com/chenshuo/muduo.git
-#   GIT_TAG v2.0.2
-#   GIT_SHALLOW ON
-# )
 
 # FetchContent_GetProperties(magic_enum)
 # if (NOT magic_enum_POPULATED)
@@ -143,6 +127,16 @@ FetchContent_Declare(
 # include_directories(${magic_enum_SOURCE_DIR})
 # endif ()
 FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum)
+
+if ("${CONTROLLER_TYPE}" STREQUAL "deepspeed")
+  add_compile_definitions(ENABLE_DEEPSPEED_FLOW_CONTROLLER)
+elseif ("${CONTROLLER_TYPE}" STREQUAL "counter")
+  add_compile_definitions(ENABLE_COUNTER_FLOW_CONTROLLER)
+elseif ("${CONTROLLER_TYPE}" STREQUAL "prefetch")
+  add_compile_definitions(ENABLE_PREFETCH_FLOW_CONTROLLER)
+else()
+  message(FATAL_ERROR "CONTROLLER_TYPE is not set")
+endif()
 
 #
 # CUDA
@@ -308,6 +302,12 @@ file(GLOB ENGINE_INC src/engine/*.h)
 # ${EVENT_INC}
 # ${BASE_INC}
 # )
+
+#set cpp standard to c++17
+set(CMAKE_CXX_STANDARD 17)
+#set cpp debug flag
+list(APPEND CXX_FLAGS "-g")
+
 add_library(
   triton-pytorch-backend SHARED
   src/libtorch.cc

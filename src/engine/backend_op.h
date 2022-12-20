@@ -1,8 +1,8 @@
 #pragma once
 
-#include "dataflow/dag_node.h"
 #include "op_base.h"
 #include "utils/enum_utils.h"
+#include "utils/topology.h"
 #include "utils/torch_utils.h"
 
 ENUM_MACRO(BackendOpType, kExecute, kLoad, kUnload)
@@ -31,34 +31,37 @@ typedef std::function<void(const BackendResponsePtr&)> BackendCallback;
 
 struct BackendExecuteRequest : BackendOpRequest {
   muduo::net::EventLoop::Functor process_requests_cb;
+  NodePtr node;
+  BackendCallback cb;
   std::mutex* mutex;
   std::condition_variable* cv;
   BackendExecuteRequest() : BackendOpRequest(BackendOpType::kExecute) {}
 };
 struct BackendExecuteResponse : BackendOpResponse {
+  NodePtr node;
   BackendExecuteResponse() : BackendOpResponse(BackendOpType::kExecute) {}
 };
 
 struct BackendLoadRequest : BackendOpRequest {
-  DAGNodePtr node;
+  NodePtr node;
   Device target_device = DEFAULT_CUDA_DEVICE;
   BackendCallback cb;
   BackendLoadRequest() : BackendOpRequest(BackendOpType::kLoad) {}
 };
 struct BackendLoadResponse : BackendOpResponse {
-  DAGNodePtr node;
+  NodePtr node;
   BackendLoadResponse() : BackendOpResponse(BackendOpType::kLoad) {}
 };
 
 struct BackendUnloadResponse : BackendOpResponse {
-  DAGNodePtr node;
+  NodePtr node;
   Device target_device = CPU_DEVICE;
   BackendUnloadResponse() : BackendOpResponse(BackendOpType::kUnload) {}
 };
 struct BackendUnloadRequest : BackendOpRequest {
-  DAGNodePtr node;
+  NodePtr node;
   Device target_device = CPU_DEVICE;
-  LoopHandle* handle;
+  // LoopHandle* handle;
   BackendCallback cb;
   BackendUnloadRequest() : BackendOpRequest(BackendOpType::kUnload) {}
 };

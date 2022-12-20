@@ -1,14 +1,15 @@
 #include "model_instance_state.h"
 
 #include "dataflow/flow_controller.h"
-#include "engine/flow_engine.h"
-#include "engine/flow_op.h"
+// #include "engine/flow_engine.h"
+// #include "engine/flow_op.h"
 #include "engine/libtorch_engine.h"
 #include "engine/libtorch_op.h"
 #include "libtorch_utils.h"
 #include "triton/backend/backend_output_responder.h"
 #include "triton/common/nvtx.h"
 #include "utils/log_utils.h"
+#include "utils/memory_utils.h"
 #include "utils/time_utils.h"
 
 #ifdef TRITON_ENABLE_GPU
@@ -18,53 +19,6 @@
 #endif  // TRITON_ENABLE_GPU
 
 namespace triton { namespace backend { namespace pytorch {
-
-// void
-// ModelInstanceState::TryAllocateNodeOnGPU()
-// {
-//   exec_mutex_.lock();
-//   // Always request for DEFAULT_CUDA_DEVICE, memory managewr will find a
-//   // suitable place for it
-//   auto start_time = TIME_NOW;
-//   auto alloc_request = std::make_shared<MemoryManageRequest>(
-//       node_, DEFAULT_CUDA_DEVICE, ManageType::ON_DEMAND);
-//   GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(alloc_request);
-
-//   LOG_MESSAGE(
-//       TRITONSERVER_LOG_VERBOSE, (std::string("ProcessRequests: ") + Name() +
-//                                  " is in enqueued for allocation")
-//                                     .c_str());
-
-//   WaitForMemoryManageRequest(alloc_request, MemoryState::ACTIVE);
-//   auto end_time = TIME_NOW;
-//   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-//       end_time - start_time);
-//   LOG_TRITON_INFO(("Allocate memory for " + node_->GetModelInstanceInfo() + "
-//   takes " +
-//             std::to_string(duration.count()) + " us")
-//                .c_str());
-// }
-
-// void
-// ModelInstanceState::TryReleaseNodeOnGPU()
-// {
-//   auto start_time = TIME_NOW;
-//   auto release_request = std::make_shared<MemoryManageRequest>(
-//       node_, CPU_DEVICE, ManageType::RELEASE);
-//   GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(release_request);
-//   //   node_->SetMemoryState(MemoryState::INACTIVE);
-//   // WaitForMemoryManageRequest(release_request, MemoryState::INACTIVE);
-//   LOG_TRITON_VERBOSE(("Release memory for " +
-//   node_->GetModelInstanceInfo()).c_str()); auto end_time = TIME_NOW; auto
-//   duration = std::chrono::duration_cast<std::chrono::microseconds>(
-//       end_time - start_time);
-//   LOG_TRITON_INFO(("Release memory for " + node_->GetModelInstanceInfo() + "
-//   takes "
-//   +
-//             std::to_string(duration.count()) + " us")
-//                .c_str());
-//   exec_mutex_.unlock();
-// }
 
 void
 ModelInstanceState::ProcessRequestsInLoop(
@@ -79,8 +33,34 @@ ModelInstanceState::ProcessRequestsInLoop(
   LOG_TRITON_VERBOSE(
       ("ProcessRequests: " + Name() + " is in enqueued for execution").c_str());
 
-  node_->GetEnginePlugin()->ProcessTritonRequest(process_func, node_);
+  // node_->GetEnginePlugin()->ProcessTritonRequest(process_func, node_);
   // mutex_.lock();
+
+  auto execute_request = std::make_shared<LibtorchExecuteRequest>();
+  execute_request->node = node_;
+  execute_request->engine = engine_;
+  execute_request->process_requests_cb = process_func;
+  execute_request->mutex = &mutex_;
+  execute_request->cv = &cv_;
+  execute_request->correlation_id = GetCorrelationId(requests[0]);
+
+  LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequestsInLoop: node: " +
+                      node_->GetModelInstanceInfo() + ", op: " +
+                      LibtorchOpTypeToString(execute_request->op_type) +
+                      ", device: " + node_->device.str())
+                         .c_str());
+  kLibtorchEngine->Init();
+  kLibtorchEngine->ProcessRequest(execute_request);
+
+  // no response needed just wait
+  std::unique_lock<std::mutex> lock(mutex_);
+  cv_.wait(lock, [this] { return node_->device == DEFAULT_CUDA_DEVICE; });
+
+  LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequestsInLoop: node: " +
+                      node_->GetModelInstanceInfo() + ", op: " +
+                      LibtorchOpTypeToString(execute_request->op_type) +
+                      ", device: " + node_->device.str() + " done")
+                         .c_str());
 
   // auto execute_request = std::make_shared<LibtorchExecuteRequest>();
   // execute_request->node = node_;
@@ -105,7 +85,7 @@ ModelInstanceState::ProcessRequests(
        std::to_string(request_count) + " requests")
           .c_str());
 
-  torch_model_ = MODULE_PTR_NODELETE(node_->GetModel());
+  torch_model_ = MODULE_PTR_NODELETE(node_->model);
 
   LOG_MESSAGE(
       TRITONSERVER_LOG_VERBOSE,
@@ -113,18 +93,18 @@ ModelInstanceState::ProcessRequests(
        " torch_model_ is " + (torch_model_ ? "not null" : "null"))
           .c_str());
 
-//   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-// #ifdef TRITON_ENABLE_GPU
-//     at::cuda::CUDAStream torch_stream =
-//         at::cuda::getStreamFromExternal(stream_, 0);
-//     at::cuda::setCurrentCUDAStream(torch_stream);
-// #endif
-//     LOG_MESSAGE(
-//         TRITONSERVER_LOG_VERBOSE,
-//         (std::string("TRITONBACKEND_ModelExecute: ") + Name() +
-//          " torch_stream is " + (torch_stream ? "not null" : "null"))
-//             .c_str());
-//   }
+  //   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
+  // #ifdef TRITON_ENABLE_GPU
+  //     at::cuda::CUDAStream torch_stream =
+  //         at::cuda::getStreamFromExternal(stream_, 0);
+  //     at::cuda::setCurrentCUDAStream(torch_stream);
+  // #endif
+  //     LOG_MESSAGE(
+  //         TRITONSERVER_LOG_VERBOSE,
+  //         (std::string("TRITONBACKEND_ModelExecute: ") + Name() +
+  //          " torch_stream is " + (torch_stream ? "not null" : "null"))
+  //             .c_str());
+  //   }
 
 
   NVTX_RANGE(nvtx_, "ProcessRequests " + Name());
@@ -272,10 +252,9 @@ ModelInstanceState::ProcessRequests(
           reinterpret_cast<void*>(&compute_infer_start_event_)));
 
   LOG_MESSAGE(
-      TRITONSERVER_LOG_VERBOSE,
-      (std::string("Running ") + Name() + " with " +
-       std::to_string(total_batch_size) + " requests")
-          .c_str());
+      TRITONSERVER_LOG_VERBOSE, (std::string("Running ") + Name() + " with " +
+                                 std::to_string(total_batch_size) + " requests")
+                                    .c_str());
 
   // Run...
   if (!all_response_failed) {
@@ -327,27 +306,30 @@ ModelInstanceState::ProcessRequests(
           &compute_end_ns,
           reinterpret_cast<void*>(&compute_output_start_event_)));
 
-  for (size_t i = 0; i < request_count; i++) {
-    node_->GetEnginePlugin()->RecordTritonRequest(
-        node_, requests[i], input_tensors[i],
-        (compute_end_ns - compute_start_ns));
-    // // auto request_id = std::hash<std::string>{}(GetRequestId(requests[i]));
-    // auto input_size = GetIValueByteSize(input_tensors[i]);
-    // // Send Request to FlowEngine
-    // auto flow_request = std::make_shared<FlowRecordRequest>();
-    // flow_request->request_id = GetRequestId(requests[i]);
-    // flow_request->node = node_;
-    // flow_request->handle = node_->GetBackendEnginePlugin()->GetLoopHandle();
-    // auto node_meta = std::make_shared<NodeMeta>();
-    // node_meta->node_id = node_->GetNodeID();
-    // node_meta->visit_cnt = 1;
-    // node_meta->input_size_cnt = input_size;
-    // node_meta->exec_lat_ns_cnt = (compute_end_ns - compute_start_ns) / 1000;
-    // flow_request->node_meta = node_meta;
-    // // std::size_t load_lat_us_cnt;
-    // // std::size_t unload_lat_us_cnt;
-    // GET_INSTANCE(FlowEngine)->RequestInLoop(flow_request);
-  }
+  // for (size_t i = 0; i < request_count; i++) {
+  //   node_->GetEnginePlugin()->RecordTritonRequest(
+  //       node_, requests[i], input_tensors[i],
+  //       (compute_end_ns - compute_start_ns));
+  //   // // auto request_id =
+  //   std::hash<std::string>{}(GetRequestId(requests[i]));
+  //   // auto input_size = GetIValueByteSize(input_tensors[i]);
+  //   // // Send Request to FlowEngine
+  //   // auto flow_request = std::make_shared<FlowRecordRequest>();
+  //   // flow_request->request_id = GetRequestId(requests[i]);
+  //   // flow_request->node = node_;
+  //   // flow_request->handle =
+  //   node_->GetBackendEnginePlugin()->GetLoopHandle();
+  //   // auto node_meta = std::make_shared<NodeMeta>();
+  //   // node_meta->node_id = node_->id;
+  //   // node_meta->visit_cnt = 1;
+  //   // node_meta->input_size_cnt = input_size;
+  //   // node_meta->exec_lat_ns_cnt = (compute_end_ns - compute_start_ns) /
+  //   1000;
+  //   // flow_request->node_meta = node_meta;
+  //   // // std::size_t load_lat_us_cnt;
+  //   // // std::size_t unload_lat_us_cnt;
+  //   // GET_INSTANCE(FlowEngine)->RequestInLoop(flow_request);
+  // }
 
   if (!all_response_failed) {
     if (!invalid_index) {
@@ -448,8 +430,8 @@ ModelInstanceState::Create(
 ModelInstanceState::ModelInstanceState(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
     : BackendModelInstance(model_state, triton_model_instance),
-      model_state_(model_state), device_(torch::kCPU), engine_(),
-      is_dict_input_(false)
+      model_state_(model_state), device_(torch::kCPU),
+      engine_(std::make_shared<BackendEngine>()), is_dict_input_(false)
 {
   // Initialize eventloop first
 
@@ -523,13 +505,15 @@ ModelInstanceState::ModelInstanceState(
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateInputs(expected_input_cnt));
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateOutputs());
 
-  LOG_TRITON_VERBOSE(("Model Validation Done " + node_ ->GetModelInstanceInfo()).c_str());
+  LOG_TRITON_VERBOSE(
+      ("Model Validation Done " + node_->GetModelInstanceInfo()).c_str());
 
   // Free this to save space for other models.
   // No Input at this point, can free directly
   node_->SetDevice(DISK_DEVICE);
-  node_->SetMemoryType(MemoryType::kStandBy);
-  LOG_TRITON_VERBOSE(("Release model to disk " + node_ ->GetModelInstanceInfo()).c_str());
+  node_->memory_type = MemoryType::kStandBy;
+  LOG_TRITON_VERBOSE(
+      ("Release model to disk " + node_->GetModelInstanceInfo()).c_str());
 }
 
 void
@@ -961,11 +945,10 @@ ModelInstanceState::Execute(
 
     LOG_MESSAGE(
         TRITONSERVER_LOG_VERBOSE,
-        (std::string("Completed running ") + model_state_->Name() + " with "
-        +
+        (std::string("Completed running ") + model_state_->Name() + " with " +
          std::to_string(input_tensors->size()) + " inputs and " +
          std::to_string(output_tensors->size()) + " outputs")
-            .c_str()); 
+            .c_str());
 
     if (model_outputs_.isTuple()) {
       auto model_outputs_tuple = model_outputs_.toTuple();

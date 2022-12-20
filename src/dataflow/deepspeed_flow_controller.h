@@ -13,9 +13,9 @@ class DeepSpeedFlowController
   DISABLE_COPY_AND_ASSIGN(DeepSpeedFlowController)
 
   void RecordNode(
-      const InputIDPtr& input_id, const DAGNodePtr& node,
+      const InputIDPtr& input_id, const NodePtr& node,
       const NodeMetaPtr& node_meta) override;
-  NodeMoveVec PrefetchNode(const DAGNodePtr& node) override;
+  NodeMoveVec PrefetchNode(const NodePtr& node) override;
 
  private:
   DeepSpeedFlowController()

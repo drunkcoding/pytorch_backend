@@ -6,18 +6,19 @@
 #include <unordered_map>
 #include <vector>
 
-#include "dataflow/dag_node.h"
+#include "muduo/base/noncopyable.h"
 #include "utils/class_utils.h"
 #include "utils/lru_cache.h"
+#include "utils/topology.h"
 
 class NodeFlow;
 typedef std::shared_ptr<NodeFlow> NodeFlowPtr;
 
 typedef std::unordered_map<std::size_t, double> ModelProbabilityMap;
-typedef std::vector<std::pair<DAGNodePtr, double>> ModelProbabilityVec;
-typedef std::vector<DAGNodePtr> NodePtrVec;
-typedef std::vector<std::pair<DAGNodePtr, Device>> NodeMoveVec;
-typedef std::unordered_map<NodeID, DAGNodePtr> NodePtrMap;
+typedef std::vector<std::pair<NodePtr, double>> ModelProbabilityVec;
+typedef std::vector<NodePtr> NodePtrVec;
+typedef std::vector<std::pair<NodePtr, Device>> NodeMoveVec;
+typedef std::unordered_map<NodeID, NodePtr> NodePtrMap;
 typedef std::unordered_map<std::size_t, NodeFlowPtr> NodeFlowPtrMap;
 
 struct NodeMeta {
@@ -68,58 +69,58 @@ struct NodeMeta {
 typedef std::shared_ptr<NodeMeta> NodeMetaPtr;
 typedef std::list<NodeMetaPtr> NodeMetaPtrList;
 
-class NodeFlow : std::enable_shared_from_this<NodeFlow> {
- public:
-  explicit NodeFlow(const DAGNodePtr& node) : node_(node)
-  {
-    node_meta_ = std::make_shared<NodeMeta>();
-    node_meta_->node_id = node->GetNodeID();
-  }
+// class NodeFlow : std::enable_shared_from_this<NodeFlow> {
+//  public:
+//   explicit NodeFlow(const NodePtr& node) : node_(node)
+//   {
+//     node_meta_ = std::make_shared<NodeMeta>();
+//     node_meta_->node_id = node->id;
+//   }
 
-  DAGNodePtr GetNode() { return node_; }
-  std::size_t GetNodeID() { return node_->GetNodeID(); }
-  NodeMetaPtr GetNodeMeta() { return node_meta_; }
+//   NodePtr GetNode() { return node_; }
+//   std::size_t GetNodeID() { return node_->id; }
+//   NodeMetaPtr GetNodeMeta() { return node_meta_; }
 
-  // Add a parent node, called at child when a new node is constructed
-  void AddPrevNode(const NodeFlowPtr& prev_node);
-  // Add a child node, called at parent when a new node is constructed
-  // If the child node already exists, increase the visit count
-  void AddNextNode(const NodeFlowPtr& next_node);
-  // Remove a child node, called at parent when a request id is deleted
-  // Decrease the visit count before actually removing the child node
-  //   void RemoveNextNode(const NodeFlowPtr& node);
+//   // Add a parent node, called at child when a new node is constructed
+//   void AddPrevNode(const NodeFlowPtr& prev_node);
+//   // Add a child node, called at parent when a new node is constructed
+//   // If the child node already exists, increase the visit count
+//   void AddNextNode(const NodeFlowPtr& next_node);
+//   // Remove a child node, called at parent when a request id is deleted
+//   // Decrease the visit count before actually removing the child node
+//   //   void RemoveNextNode(const NodeFlowPtr& node);
 
-  // The request id is removed from cache, subtracting the node meta from
-  // current record
-  void DereferenceNode(const NodeMetaPtr& node_meta);
+//   // The request id is removed from cache, subtracting the node meta from
+//   // current record
+//   void DereferenceNode(const NodeMetaPtr& node_meta);
 
-  const NodeFlowPtrMap& GetNextNodes() const { return next_nodes_; }
-  const NodeFlowPtrMap& GetPrevNodes() const { return prev_nodes_; }
+//   const NodeFlowPtrMap& GetNextNodes() const { return next_nodes_; }
+//   const NodeFlowPtrMap& GetPrevNodes() const { return prev_nodes_; }
 
- private:
-  DAGNodePtr node_;
-  NodeFlowPtrMap next_nodes_;
-  NodeFlowPtrMap prev_nodes_;
-  NodeMetaPtr node_meta_;
-};
+//  private:
+//   NodePtr node_;
+//   NodeFlowPtrMap next_nodes_;
+//   NodeFlowPtrMap prev_nodes_;
+//   NodeMetaPtr node_meta_;
+// };
 
 
 class NodeTopology;
 typedef std::shared_ptr<NodeTopology> NodeTopologyPtr;
 
-typedef std::function<bool(const DAGNodePtr&)> NodeFilterFunc;
+typedef std::function<bool(const NodePtr&)> NodeFilterFunc;
 
 
 typedef std::unordered_map<NodeID, NodeTopologyPtr> NodeTopoPtrMap;
 class NodeTopology : public std::enable_shared_from_this<NodeTopology> {
  public:
   explicit NodeTopology(
-      const DAGNodePtr& node, const CorrelationID& correlation_id)
+      const NodePtr& node, const CorrelationID& correlation_id)
       : node_(node), correlation_id_(correlation_id)
   {
   }
-  DAGNodePtr GetNode() { return node_; }
-  NodeID GetNodeID() { return node_->GetNodeID(); }
+  NodePtr GetNode() { return node_; }
+  NodeID GetNodeID() { return node_->id; }
   CorrelationID GetCorrelationID() { return correlation_id_; }
 
   // Add a parent node, called at child when a new node is constructed
@@ -132,82 +133,76 @@ class NodeTopology : public std::enable_shared_from_this<NodeTopology> {
   const NodeTopoPtrMap& GetPrevNodes() const { return prev_nodes_; }
 
  private:
-  DAGNodePtr node_;
+  NodePtr node_;
   CorrelationID correlation_id_;
   NodeTopoPtrMap next_nodes_;
+  NodeTopoPtrMap
+      next_sparse_nodes_;  // contains all sparse nodes in the next level
   NodeTopoPtrMap prev_nodes_;
 };
 
-typedef std::vector<DAGNodePtr> NodePtrList;
+
+typedef std::vector<NodePtr> NodePtrList;
+typedef std::tuple<std::size_t, NodePtrList> FilterResult;
 class FlowControllerFactory : public muduo::noncopyable {
  public:
   // DISABLE_COPY_AND_ASSIGN(FlowControllerFactory);
   virtual void RecordNode(
-      const InputIDPtr& input_id, const DAGNodePtr& node,
+      const InputIDPtr& input_id, const NodePtr& node,
       const NodeMetaPtr& node_meta) = 0;
-  virtual NodeMoveVec PrefetchNode(const DAGNodePtr& node) = 0;
+  virtual NodeMoveVec PrefetchNode(const NodePtr& node) = 0;
 
  protected:
-  void PutNodeTopology(
-      const std::uint64_t& correlation_id, const DAGNodePtr& node);
-  NodeTopologyPtr GetNodeTopology(const NodeID& node_id);
-  NodePtrList GetNodesByFilter(
-      const NodeFilterFunc& filter_func, const NodeID& node_id);
+  // void PutNodeTopology(
+  //     const std::uint64_t& correlation_id, const NodePtr& node);
+  void PutNodeToPipeline(
+      const std::uint64_t& request_id, const std::uint64_t& correlation_id,
+      const NodePtr& node);
+  // NodeTopologyPtr GetNodeTopology(const NodeID& node_id);
+  // NodePtrList GetNodesByFilter(
+  //     const NodeFilterFunc& filter_func, const NodeID& node_id);
 
-  void DispatchNodeMemoryInThread(const DAGNodePtr& node, const Device& device);
+  void DispatchNodeMemoryInThread(const NodePtr& node, const Device& device);
 
-  bool MemorySizeFilter(const DAGNodePtr& node, std::size_t* size)
+  FilterResult GetTotalLiveParamSize();
+  FilterResult GetTotalGPUParamSize();
+  FilterResult GetRemovableNodes();
+  FilterResult GetStandbyChildBySizeLimit(
+      const NodePtr& node, std::size_t size_limit);
+
+  bool MemorySizeFilter(const NodePtr& node, std::size_t* size)
   {
-    if (node->GetNodeByteSize() > *size) {
-      *size -= node->GetNodeByteSize();
-      return true;
-    }
-    return false;
-  }
-
-  bool RemoveFilter(const DAGNodePtr& node)
-  {
-    if (node->GetMemoryType() == MemoryType::kReady) {
-      return true;
-    }
-    return false;
-  }
-
-  bool ParamLiveFilter(const DAGNodePtr& node, std::size_t* size)
-  {
-    if (node->GetMemoryType() == MemoryType::kLocked) {
-      *size += node->GetNodeByteSize();
-      return true;
-    }
-    return false;
-  }
-
-  bool ParamGPUFilter(const DAGNodePtr& node, std::size_t* size)
-  {
-    if (node->GetDevice() == DEFAULT_CUDA_DEVICE) {
-      *size += node->GetNodeByteSize();
+    if (node->byte_size > *size) {
+      *size -= node->byte_size;
       return true;
     }
     return false;
   }
 
  private:
-  void DispatchNodeMemory(const DAGNodePtr& node, const Device& device);
+  void DispatchNodeMemory(const NodePtr& node, const Device& device);
 
  protected:
-  NodeTopologyPtr root_;
-  std::unordered_map<NodeID, NodeTopologyPtr> topology_;
+  // NodeTopologyPtr root_;
+  // std::unordered_map<NodeID, NodeTopologyPtr> topology_;
   std::unordered_set<HashID> visited_;
+  // std::size_t total_visit_cnt_{0};
+  // std::unordered_map<NodeID, std::size_t> visit_cnt_;
+  // std::unordered_map<NodeID, std::size_t> visit_time_;
+  Pipeline pipeline_;
 };
 
 class DeepSpeedFlowController;
 class CounterFlowController;
 class PrefetchFlowController;
 
+// #define FLOW_CONTROLLER GET_INSTANCE(DeepSpeedFlowController)
+// #define FLOW_CONTROLLER GET_INSTANCE(CounterFlowController)
+// #define FLOW_CONTROLLER GET_INSTANCE(PrefetchFlowController)
+
 #ifdef ENABLE_DEEPSPEED_FLOW_CONTROLLER
 #define FLOW_CONTROLLER GET_INSTANCE(DeepSpeedFlowController)
 #endif
-
 
 #ifdef ENABLE_COUNTER_FLOW_CONTROLLER
 #define FLOW_CONTROLLER GET_INSTANCE(CounterFlowController)
@@ -216,3 +211,16 @@ class PrefetchFlowController;
 #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
 #define FLOW_CONTROLLER GET_INSTANCE(PrefetchFlowController)
 #endif
+
+
+#define BREAK_IF(node)                               \
+  do {                                               \
+    total_size += node->byte_size;                   \
+    if (total_size >= size_limit) {                  \
+      break;                                         \
+    }                                                \
+    if (node->memory_type == MemoryType::kStandBy) { \
+      prefetch_node_list.push_back(node);            \
+    }                                                \
+  } while (0)
+

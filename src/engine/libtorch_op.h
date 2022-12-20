@@ -3,11 +3,11 @@
 #include <condition_variable>
 
 #include "backend_op.h"
-#include "dataflow/dag_node.h"
+#include "dataflow/flow_controller.h"
 #include "dataflow/forward_def.h"
 #include "op_base.h"
 #include "utils/enum_utils.h"
-#include "dataflow/flow_controller.h"
+#include "utils/topology.h"
 
 // class LibtorchOpType : public EnumType {
 //  public:
@@ -31,8 +31,8 @@ typedef std::shared_ptr<LibtorchOpResponse> LibtorchResponsePtr;
 
 struct LibtorchExecuteRequest : LibtorchOpRequest {
   muduo::net::EventLoop::Functor process_requests_cb;
-  DAGNodePtr node;
-  Device target_device = DEFAULT_CUDA_DEVICE;
+  NodePtr node;
+  std::uint64_t correlation_id;
   mutable std::mutex* mutex;
   mutable std::condition_variable* cv;
   LibtorchExecuteRequest() : LibtorchOpRequest(LibtorchOpType::kExecute) {}
@@ -42,7 +42,7 @@ struct LibtorchExecuteResponse : LibtorchOpResponse {
 };
 
 struct LibtorchPrefetchRequest : LibtorchOpRequest {
-  DAGNodePtr node;
+  NodePtr node;
   Device target_device = DEFAULT_CUDA_DEVICE;
   LibtorchPrefetchRequest() : LibtorchOpRequest(LibtorchOpType::kPrefetch) {}
 };
@@ -62,10 +62,10 @@ class LibtorchOpManager : public OpBase {
 
  private:
   void RunLoadInBackend(
-      const BackendEnginePtr& engine, const DAGNodePtr& node,
+      const BackendEnginePtr& engine, const NodePtr& node,
       const Device& device);
   void RunUnloadInBackend(
-      const LibtorchRequestPtr& request, const DAGNodePtr& node,
+      const LibtorchRequestPtr& request, const NodePtr& node,
       const Device& device, std::atomic_uint64_t* wait_count);
 
 
@@ -76,7 +76,7 @@ class LibtorchOpManager : public OpBase {
       std::atomic_uint64_t* wait_count);
 
   void EntryWaitModelLoad(const BackendResponsePtr& response);
-
+  void EntryWaitModelExecute(const BackendResponsePtr& response);
   void EntryWaitImmedientModel(
       const BackendResponsePtr& response, const LibtorchRequestPtr& request);
 

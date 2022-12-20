@@ -59,20 +59,31 @@
 // }
 
 
-LibtorchEngine::LibtorchEngine()
+LibtorchEngine::LibtorchEngine() : is_init_(false)
 {
   // loop_ = new muduo::net::EventLoop(
   //     CREATE_INS(LibtorchEngineHandle), INIT_INS(LibtorchEngineHandle),
   //     "LibtorchEngine");
   // loop_->Start();
-  loop_thread_ = std::make_shared<muduo::net::EventLoopThread>(
-      INIT_INS(LibtorchEngine), "LibtorchEngine");
-  loop_ = loop_thread_->startLoop();
-  op_manager_ = std::make_shared<LibtorchOpManager>(loop_);
+
   // loop_ =
   //     new EventLoopLibevent("LibtorchEngine",
   //     CREATE_INS(LibtorchEngineHandle));
   // loop_->Start();
+}
+
+void
+LibtorchEngine::Init()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (is_init_) {
+    return;
+  }
+  loop_thread_ = std::make_shared<muduo::net::EventLoopThread>(
+      INIT_INS(LibtorchEngine), "LibtorchEngine");
+  loop_ = loop_thread_->startLoop();
+  op_manager_ = std::make_shared<LibtorchOpManager>(loop_);
+  is_init_ = true;
 }
 
 LibtorchEngine::~LibtorchEngine()
