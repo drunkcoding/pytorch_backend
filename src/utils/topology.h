@@ -2,10 +2,12 @@
 
 #include <memory>
 
+#include "log_utils.h"
 #include "state.h"
 #include "time_utils.h"
 #include "torch_utils.h"
-#include "log_utils.h"
+
+#include "muduo/base/Mutex.h"
 
 /*
  * The datastructure for topology is as follow:
@@ -21,42 +23,49 @@ struct Node {
   MemoryType memory_type;  // indicating whether the node is executing or
                            // controlled by flow controller
   std::size_t id;
-  std::size_t byte_size;
+  std::size_t corr_id;
+  std::int64_t byte_size;
   std::size_t last_access_time;
   Device device;
+
+
+  // for fetch thread synchronization
+  // muduo::MutexLock mutex;
+  std::mutex mutex;
 
  private:
   std::string model_path_;
 
  public:
   explicit Node(const std::string& model_path)
-      : id(std::hash<std::string>{}(model_path)), byte_size(0),
-        last_access_time(MCIROSECONDS_SINCE_EPOCH), device(CPU_DEVICE),
+      : id(std::hash<std::string>{}(model_path)), corr_id(0), byte_size(0),
+        last_access_time(MCIROSECONDS_SINCE_EPOCH), device(DISK_DEVICE),
         model_path_(model_path)
   {
     model = new ScriptModule(torch::jit::load(model_path));
-    std::uint64_t param_size = 0;
+    std::int64_t param_size = 0;
     for (const auto& param : model->parameters()) {
       param_size += param.numel() * param.element_size();
     }
 
     // Iterate model buffers and calculate the total size of the model
-    std::uint64_t buffer_size = 0;
+    std::int64_t buffer_size = 0;
     for (const auto& buffer : model->buffers()) {
       buffer_size += buffer.numel() * buffer.element_size();
     }
     byte_size = param_size + buffer_size;
+    // mutex.unlock();
   }
 
   const std::string GetModelInstanceInfo() noexcept
   {
     // return member value as string
     std::stringstream ss;
-    ss << "model_path: " << model_path_ << std::endl;
-    ss << "id: " << id << std::endl;
-    ss << "byte_size: " << byte_size << std::endl;
-    ss << "last_access_time: " << last_access_time << std::endl;
-    ss << "device: " << device << std::endl;
+    ss << "model_path: " << model_path_ << " id: " << id
+       << " corr_id: " << std::hex << corr_id << std::dec
+       << " byte_size: " << byte_size
+       << " last_access_time: " << last_access_time << "device: " << device
+       << " memory_type: " << static_cast<int>(memory_type) << std::endl;
     return ss.str();
   }
 
@@ -68,7 +77,6 @@ struct Node {
     // InferenceMode should be used to guard all tensors operations including
     // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
     torch::InferenceMode infer_guard(true);
-
 
     // In our context, lazy device stays on disk
     if (target_device == DISK_DEVICE) {
@@ -84,16 +92,10 @@ struct Node {
 
     device = target_device;
   }
-
-  void SpinUntilGPUReady() noexcept
-  {
-    while (device != DEFAULT_CUDA_DEVICE) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-  }
 };
 typedef std::shared_ptr<Node> NodePtr;
-
+typedef std::vector<NodePtr> NodePtrList;
+typedef std::tuple<std::int64_t, NodePtrList> FilterResult;
 
 struct NodeBody;
 typedef std::shared_ptr<NodeBody> NodeBodyPtr;
@@ -107,22 +109,46 @@ struct NodeBody {
   std::size_t visit_cnt;
   std::deque<std::size_t> visit_time;
   explicit NodeBody(NodePtr node) : node(node), visit_cnt(0) {}
+
+  std::string str() const noexcept
+  {
+    std::stringstream ss;
+    ss << "NodeBody: " << node->GetModelInstanceInfo() << "visit_cnt "
+       << visit_cnt << std::endl;
+    return ss.str();
+  }
 };
 
 struct Stage {
   bool is_sparse;
-  NodeBodyPtr root;  // when the stage is sparse, root is the first router node
   std::vector<NodeBodyPtr> nodes;
   std::size_t visit_cnt;
   std::deque<std::size_t> visit_time;
-  Stage() : is_sparse(false), root(nullptr) {}
-  Stage(bool is_sparse) : is_sparse(is_sparse), root(nullptr) {}
+  std::unordered_set<std::size_t> activate_request;
+  Stage() : is_sparse(false), visit_cnt(0) {}
+  Stage(bool is_sparse) : is_sparse(is_sparse), visit_cnt(0) {}
+
+  std::string str() const noexcept
+  {
+    std::stringstream ss;
+    ss << "Stage: " << nodes.size() << " nodes; visit_cnt " << visit_cnt
+       << "; is_sparse " << is_sparse << std::endl;
+    return ss.str();
+  }
 };
 typedef std::shared_ptr<Stage> StagePtr;
 
 
 struct Pipeline {
   std::vector<StagePtr> stages;
-  std::size_t visit_cnt;
+  std::size_t visit_cnt = 0;
+
+  std::string str() const noexcept
+  {
+    std::stringstream ss;
+    ss << "Pipeline: " << stages.size() << " stages; visit_cnt " << visit_cnt
+       << std::endl;
+    return ss.str();
+  }
 };
 typedef std::shared_ptr<Pipeline> PipelinePtr;

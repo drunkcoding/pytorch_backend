@@ -8,18 +8,20 @@ class CounterFlowController : public FlowControllerFactory {
   DISABLE_COPY_AND_ASSIGN(CounterFlowController)
 
   void RecordNode(
-      const InputIDPtr& input_id, const NodePtr& node,
-      const NodeMetaPtr& node_meta) override;
+      const InputIDPtr& input_id, const NodePtr& node) override;
   NodeMoveVec PrefetchNode(const NodePtr& node) override;
 
  private:
-  CounterFlowController() = default;
+  CounterFlowController() {
+    free_cpu_memory_ = SYS_MEM_CTL->GetFreeMemory();
+    free_gpu_memory_ = DEFAULT_CUDA_MEM_CTL->GetFreeMemory();
+  }
   virtual ~CounterFlowController() = default;
 
-  FilterResult GetStandbyChildByCount(const NodeID node_id, std::size_t size_limit);
+  FilterResult GetStandbyChildByCount(const NodePtr& node, const std::size_t size_limit);
 
  private:
   std::unordered_map<NodeID, Device> node_location_;
-  std::size_t free_cpu_memory_{0};
-  std::size_t free_gpu_memory_{0};
+  std::int64_t free_cpu_memory_;
+  std::int64_t free_gpu_memory_;
 };

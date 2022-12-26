@@ -32,7 +32,7 @@ typedef std::shared_ptr<LibtorchOpResponse> LibtorchResponsePtr;
 struct LibtorchExecuteRequest : LibtorchOpRequest {
   muduo::net::EventLoop::Functor process_requests_cb;
   NodePtr node;
-  std::uint64_t correlation_id;
+  InputIDPtr input_id;
   mutable std::mutex* mutex;
   mutable std::condition_variable* cv;
   LibtorchExecuteRequest() : LibtorchOpRequest(LibtorchOpType::kExecute) {}
@@ -57,7 +57,7 @@ class LibtorchOpManager : public OpBase {
 
   virtual void Process() {}
 
-  void ExecuteModel(const LibtorchRequestPtr& request);
+  bool ExecuteModel(const LibtorchRequestPtr& request);
   // void PrefetchModel(const LibtorchRequestPtr& request);
 
  private:
@@ -82,5 +82,5 @@ class LibtorchOpManager : public OpBase {
 
  private:
   NodeMoveVec node_prefetch_vec_;
-  std::unordered_map<NodeID, BackendEnginePtr> backend_engine_map_;
+  // std::unordered_map<NodeID, BackendEnginePtr> backend_engine_map_;
 };

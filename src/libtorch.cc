@@ -244,7 +244,7 @@ TRITONBACKEND_ModelInstanceExecute(
   // this function. If something does go wrong in processing a
   // particular request then we send an error response just for the
   // specific request.
-  instance_state->ProcessRequestsInLoop(requests, request_count);
+  instance_state->ProcessRequests(requests, request_count);
 
   if (model_state->EnabledCacheCleaning()) {
     instance_state->ClearCache();

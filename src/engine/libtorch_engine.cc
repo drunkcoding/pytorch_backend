@@ -115,20 +115,26 @@ LibtorchEngine::ProcessRequest(const LibtorchRequestPtr& request)
 void
 LibtorchEngine::DispachRequest(const LibtorchRequestPtr& request)
 {
-  LOG_TRITON_VERBOSE("LibtorchEngineHandle::DispachRequest");
-  LOG_TRITON_VERBOSE((std::string("LibtorchEngineHandle::DispachRequest ") +
-                      LibtorchOpTypeToString(request->op_type))
-                         .c_str());
-
+  // LOG_TRITON_VERBOSE("LibtorchEngineHandle::DispachRequest");
+  // LOG_TRITON_VERBOSE((std::string("LibtorchEngineHandle::DispachRequest ") +
+  //                     LibtorchOpTypeToString(request->op_type))
+  //                        .c_str());
+  bool ret = false;
   switch (request->op_type) {
     case LibtorchOpType::kExecute:
-      op_manager_->ExecuteModel(request);
+      ret = op_manager_->ExecuteModel(request);
       break;
     // case LibtorchOpType::kPrefetch:
     //   op_manager_->PrefetchModel(request);
     //   break;
     default:
       break;
+  }
+
+  if (!ret) {
+    // LOG_TRITON_ERROR(
+    //     "LibtorchEngine::DispachRequest execute model failed, do again");
+    loop_->queueInLoop(SELF_BIND_ARGS(LibtorchEngine, ProcessRequestInLoop, request));
   }
 }
 

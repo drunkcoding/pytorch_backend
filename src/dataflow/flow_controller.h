@@ -6,8 +6,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "controller/fetch.h"
+#include "controller/mem_ctrl.h"
+#include "memory_manager.h"
 #include "muduo/base/noncopyable.h"
 #include "utils/class_utils.h"
+#include "utils/functor.h"
 #include "utils/lru_cache.h"
 #include "utils/topology.h"
 
@@ -142,15 +146,18 @@ class NodeTopology : public std::enable_shared_from_this<NodeTopology> {
 };
 
 
-typedef std::vector<NodePtr> NodePtrList;
-typedef std::tuple<std::size_t, NodePtrList> FilterResult;
 class FlowControllerFactory : public muduo::noncopyable {
  public:
   // DISABLE_COPY_AND_ASSIGN(FlowControllerFactory);
-  virtual void RecordNode(
-      const InputIDPtr& input_id, const NodePtr& node,
-      const NodeMetaPtr& node_meta) = 0;
+  FlowControllerFactory();
+  virtual void RecordNode(const InputIDPtr& input_id, const NodePtr& node) = 0;
   virtual NodeMoveVec PrefetchNode(const NodePtr& node) = 0;
+
+  void UpdateMemoryManager(
+      const Device& from, const Device& to, const std::size_t& size);
+
+  // Prefetch if possible
+  bool CreatePrefetchThreads(const NodePtr& node, const SizeFilterFunc& func);
 
  protected:
   // void PutNodeTopology(
@@ -162,25 +169,30 @@ class FlowControllerFactory : public muduo::noncopyable {
   // NodePtrList GetNodesByFilter(
   //     const NodeFilterFunc& filter_func, const NodeID& node_id);
 
+  void UpdateMemoryManager(const NodeMoveVec& prefetch_nodes);
+  void UpdateInitPrefetchNodes(
+      NodeMoveVec& prefetch_nodes, const SizeFilterFunc& func);
+
+
   void DispatchNodeMemoryInThread(const NodePtr& node, const Device& device);
 
   FilterResult GetTotalLiveParamSize();
   FilterResult GetTotalGPUParamSize();
   FilterResult GetRemovableNodes();
-  FilterResult GetStandbyChildBySizeLimit(
-      const NodePtr& node, std::size_t size_limit);
 
-  bool MemorySizeFilter(const NodePtr& node, std::size_t* size)
-  {
-    if (node->byte_size > *size) {
-      *size -= node->byte_size;
-      return true;
-    }
-    return false;
-  }
+  FilterResult GetLRUNodes();
+  // bool MemorySizeFilter(const NodePtr& node, std::size_t* size)
+  // {
+  //   if (node->byte_size > *size) {
+  //     *size -= node->byte_size;
+  //     return true;
+  //   }
+  //   return false;
+  // }
 
  private:
   void DispatchNodeMemory(const NodePtr& node, const Device& device);
+  std::int64_t GetPrefetableSize();
 
  protected:
   // NodeTopologyPtr root_;
@@ -189,6 +201,8 @@ class FlowControllerFactory : public muduo::noncopyable {
   // std::size_t total_visit_cnt_{0};
   // std::unordered_map<NodeID, std::size_t> visit_cnt_;
   // std::unordered_map<NodeID, std::size_t> visit_time_;
+  // MemoryManagerPtr cpu_memory_manager_;
+  // MemoryManagerPtr gpu_memory_manager_;
   Pipeline pipeline_;
 };
 
@@ -222,5 +236,15 @@ class PrefetchFlowController;
     if (node->memory_type == MemoryType::kStandBy) { \
       prefetch_node_list.push_back(node);            \
     }                                                \
+  } while (0)
+
+
+#define RELEASE_LOCKS(nodes)     \
+  do {                           \
+    while (!nodes.empty()) {     \
+      auto node = nodes.back(); \
+      nodes.pop_back();         \
+      node->mutex.unlock();      \
+    }                            \
   } while (0)
 

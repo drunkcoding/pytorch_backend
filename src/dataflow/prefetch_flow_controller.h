@@ -8,19 +8,21 @@ class PrefetchFlowController : public FlowControllerFactory {
   STATIC_GET_INSTANCE(PrefetchFlowController)
   DISABLE_COPY_AND_ASSIGN(PrefetchFlowController)
 
-  void RecordNode(
-      const InputIDPtr& input_id, const NodePtr& node,
-      const NodeMetaPtr& node_meta) override;
+  void RecordNode(const InputIDPtr& input_id, const NodePtr& node) override;
   NodeMoveVec PrefetchNode(const NodePtr& node) override;
 
-  FilterResult GetStandbyChildByFreq(
-      const NodePtr& node, std::size_t size_limit);
   //   ModelProbabilityVec GetTreeProbability(const NodePtr& node);
 
  private:
-  PrefetchFlowController() = default;
+  PrefetchFlowController()
+  {
+    free_cpu_memory_ = SYS_MEM_CTL->GetFreeMemory();
+    free_gpu_memory_ = DEFAULT_CUDA_MEM_CTL->GetFreeMemory();
+  }
   virtual ~PrefetchFlowController() = default;
 
+  FilterResult GetStandbyChildByFreq(
+      const NodePtr& node, const std::size_t size_limit);
   //   void RecursivelyUpdateProbability(
   //       const NodeFlowPtr& node_flow, ModelProbabilityVec& prob_map);
 
@@ -29,7 +31,7 @@ class PrefetchFlowController : public FlowControllerFactory {
   std::unordered_map<std::size_t, StagePtr>
       request_trace_;  //<request_id, node_id>
   //   std::unordered_map<std::size_t, NodeFlowPtr> flow_graph_;
-  std::size_t free_cpu_memory_{0};
-  std::size_t free_gpu_memory_{0};
+  std::int64_t free_cpu_memory_;
+  std::int64_t free_gpu_memory_;
+  std::unordered_map<NodeID, Device> node_location_;
 };
-

@@ -290,10 +290,12 @@ link_directories(${MUDUO_TOP_DIR}/build/lib)
 file(GLOB UTILS_SRC src/utils/*.cc)
 file(GLOB DATAFLOW_SRC src/dataflow/*.cc)
 file(GLOB ENGINE_SRC src/engine/*.cc)
+file(GLOB CONTROLLER_SRC src/controller/*.cc)
 
 file(GLOB UTILS_INC src/utils/*.h)
 file(GLOB DATAFLOW_INC src/dataflow/*.h)
 file(GLOB ENGINE_INC src/engine/*.h)
+file(GLOB CONTROLLER_INC src/controller/*.h)
 
 # add_library(
 # event-loop SHARED
@@ -305,8 +307,10 @@ file(GLOB ENGINE_INC src/engine/*.h)
 
 #set cpp standard to c++17
 set(CMAKE_CXX_STANDARD 17)
+#set compiler to clang
+set(CMAKE_CXX_COMPILER "c++")
 #set cpp debug flag
-list(APPEND CXX_FLAGS "-g")
+list(APPEND CXX_FLAGS "-g -gstabs -stdlib=libc++")
 
 add_library(
   triton-pytorch-backend SHARED
@@ -323,6 +327,8 @@ add_library(
   ${DATAFLOW_INC}
   ${ENGINE_SRC}
   ${ENGINE_INC}
+  ${CONTROLLER_SRC}
+  ${CONTROLLER_INC}
 )
 
 add_library(

@@ -11,10 +11,12 @@ struct DoNothingDeleter {
   void operator()(T* ptr) const {}
 };
 
-#define MODULE_PTR_NODELETE(ptr)              \
-  std::shared_ptr<ScriptModule>               \
-  {                                           \
-    ptr, DoNothingDeleter<ScriptModule> {} \
+#define MODULE_PTR_NODELETE(ptr)        \
+  std::shared_ptr<ScriptModule>         \
+  {                                     \
+    ptr, DoNothingDeleter<ScriptModule> \
+    {                                   \
+    }                                   \
   }
 
 inline std::size_t
@@ -111,3 +113,8 @@ GetSumOfIValueByteSize(const std::vector<torch::jit::IValue>& values)
   }
   return size;
 }
+
+#define DEFAULT_DEVICE_ID 0
+#define DEFAULT_CUDA_FREE_MEMORY GetFreeDeviceMemory(DEFAULT_DEVICE_ID)
+#define CUDA_FREE_MEMORY(idx) GetFreeDeviceMemory(idx) * 0.8
+#define SYS_FREE_MEMORY GetFreeSystemMemory() * 0.8

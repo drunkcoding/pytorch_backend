@@ -7,13 +7,13 @@
 #include <string>
 #include <unordered_set>
 
-#include "triton/core/tritonserver.h"
 #include "triton/backend/backend_common.h"
+#include "triton/core/tritonserver.h"
 
 using NodeID = std::size_t;
 using HashID = std::size_t;
 using CorrelationID = std::uint64_t;
-using RequestID = std::string;
+using RequestID = std::uint64_t;
 
 struct InputID {
   CorrelationID correlation_id;
@@ -23,11 +23,9 @@ typedef std::shared_ptr<InputID> InputIDPtr;
 
 typedef std::unordered_set<NodeID> NodeIDSet;
 
-std::string
-GetRequestId(TRITONBACKEND_Request* request);
+std::uint64_t GetRequestID(TRITONBACKEND_Request* request);
 
-std::uint64_t
-GetCorrelationId(TRITONBACKEND_Request* request);
+std::uint64_t GetCorrelationID(TRITONBACKEND_Request* request);
 
 template <class T1, class T2, class Pred = std::greater<T2>>
 struct sort_pair_second {

@@ -44,23 +44,28 @@ struct BackendExecuteResponse : BackendOpResponse {
 
 struct BackendLoadRequest : BackendOpRequest {
   NodePtr node;
-  Device target_device = DEFAULT_CUDA_DEVICE;
+  Device from = META_DEVICE;
+  Device to = META_DEVICE;
   BackendCallback cb;
   BackendLoadRequest() : BackendOpRequest(BackendOpType::kLoad) {}
 };
 struct BackendLoadResponse : BackendOpResponse {
   NodePtr node;
+  Device from = META_DEVICE;
+  Device to = META_DEVICE;
   BackendLoadResponse() : BackendOpResponse(BackendOpType::kLoad) {}
 };
 
 struct BackendUnloadResponse : BackendOpResponse {
   NodePtr node;
-  Device target_device = CPU_DEVICE;
+  Device from = META_DEVICE;
+  Device to = META_DEVICE;
   BackendUnloadResponse() : BackendOpResponse(BackendOpType::kUnload) {}
 };
 struct BackendUnloadRequest : BackendOpRequest {
   NodePtr node;
-  Device target_device = CPU_DEVICE;
+  Device from = META_DEVICE;
+  Device to = META_DEVICE;
   // LoopHandle* handle;
   BackendCallback cb;
   BackendUnloadRequest() : BackendOpRequest(BackendOpType::kUnload) {}

@@ -8,6 +8,11 @@
 
 #include <queue>
 
+#include "forward_def.h"
+#include "triton/common/logging.h"
+#include "utils/functor.h"
+#include "utils/memory_utils.h"
+
 // #include "memory_controller.h"
 
 // void
@@ -22,7 +27,7 @@
 // NodeFlow::AddNextNode(const NodeFlowPtr& next_node)
 // {
 //   // auto next_node = std::make_shared<NodeFlow>(node);
-//   next_nodes_.emplace(std::make_pair(next_node->id, next_node));
+//   next_nodes_.emplace(std::make_pair(next_, next_node));
 //   // next_node->AddPrevNode(SELF(NodeFlow));
 //   //   if (!result.second) {
 //   //     result.first->second->visit_cnt++;
@@ -113,66 +118,79 @@ FlowControllerFactory::PutNodeToPipeline(
     high_corr_id = 0;  // reset to 0 avoid miss use
   }
 
-  node->id = correlation_id;
+  // LOG_VERBOSE(5) << "PutNodeToPipeline: request_id " << request_id
+  //                << " correlation_id " << std::hex << correlation_id
+  //                << " high_corr_id " << high_corr_id << " low_corr_id "
+  //                << low_corr_id << " is_last_node " << is_last_node;
+  LOG_TRITON_VERBOSE(
+      (std::string("PutNodeToPipeline: request_id ") +
+       std::to_string(request_id) + std::string(" correlation_id ") +
+       std::to_string(correlation_id) + std::string(" high_corr_id ") +
+       std::to_string(high_corr_id) + std::string(" low_corr_id ") +
+       std::to_string(low_corr_id) + std::string(" is_last_node ") +
+       std::to_string(is_last_node))
+          .c_str());
+
+  node->corr_id = correlation_id;
+  auto node_idx = (high_corr_id > 0) ? (high_corr_id - 1) : 0;
 
   if (visited_.find(correlation_id) == visited_.end()) {
     visited_.insert(correlation_id);
-
     auto node_body = std::make_shared<NodeBody>(node);
 
-    assert(pipeline_.stages.size() >= low_corr_id);
+    // LOG_TRITON_VERBOSE(
+    //     (std::string("PutNodeToPipeline: ") + pipeline_.str()).c_str());
 
-    // this is a new stage  at tail
-    if (pipeline_.stages.size() == low_corr_id) {
-      auto stage = std::make_shared<Stage>();
-      stage->nodes.push_back(node_body);
-      pipeline_.stages.push_back(stage);
-    } else {
-      // this is a new node in the middle, has to be a sparse branching
-      auto stage = pipeline_.stages[low_corr_id];
+    // assert(pipeline_.stages.size() >= low_corr_id); may skip some stages
+    // since embed can run in parallel
 
-      if (!stage->is_sparse) {
-        assert(stage->nodes.size() == 1);
-        stage->is_sparse = true;
-        stage->root = stage->nodes[0];
-        stage->nodes.clear();
-        if (high_corr_id > stage->nodes.size()) {
-          stage->nodes.resize(high_corr_id);
-        }
-        stage->nodes[high_corr_id - 1];
-      } else {
-        if (high_corr_id > stage->nodes.size()) {
-          stage->nodes.resize(high_corr_id);
-        }
-        stage->nodes[high_corr_id - 1];
-      }
-    }
+    if (pipeline_.stages.size() < low_corr_id + 1)
+      pipeline_.stages.resize(low_corr_id + 1, nullptr);
+
+    if (pipeline_.stages[low_corr_id] == nullptr)
+      pipeline_.stages[low_corr_id] = std::make_shared<Stage>();
+
+    auto stage = pipeline_.stages[low_corr_id];
+
+    if (stage->nodes.size() < node_idx + 1)
+      stage->nodes.resize(node_idx + 1, nullptr);
+
+    stage->nodes[node_idx] = node_body;
+
+    if (high_corr_id > 0)
+      stage->is_sparse = true;
+
+    // LOG_TRITON_VERBOSE(
+    //     (std::string("PutNodeToPipeline: Add new stage") + stage->str())
+    //         .c_str());
   }
-  // auto node_id = node->id;
+
   auto stage = pipeline_.stages[low_corr_id];
-  NodeBodyPtr node_body;
-
+  auto node_body = stage->nodes[(stage->is_sparse) ? (high_corr_id - 1) : 0];
   auto now = MCIROSECONDS_SINCE_EPOCH;
-
-  if (stage->is_sparse) {
-    if (high_corr_id == 0) {
-      node_body = stage->root;
-      stage->visit_time.push_back(now);
-    } else
-      node_body = stage->nodes[high_corr_id - 1];
-  } else {
-    node_body = stage->nodes[0];
-    stage->visit_time.push_back(now);
-  }
 
   node_body->visit_time.push_back(now);
   node_body->visit_cnt += 1;
   node_body->activate_request.insert(request_id);
   node_body->node->last_access_time = now;
 
+
+  // LOG_TRITON_VERBOSE(
+  //     ("PutNodeToPipeline: node_body " + node_body->str()).c_str());
+
   // First update the visit count
   // 1. visit to sparse nodes only count once to total visit count
   // 2. find the last sparse layer and update the visit count of parent node
+
+
+  if (stage->activate_request.find(request_id) ==
+      stage->activate_request.end()) {
+    // this is the first node in the stage
+    // update the visit count of the stage
+    stage->visit_cnt += 1;
+  }
+
+  stage->activate_request.insert(request_id);
 
   if (correlation_id == 0) {
     // this is the first node in the pipeline
@@ -180,21 +198,25 @@ FlowControllerFactory::PutNodeToPipeline(
     pipeline_.visit_cnt += 1;
   }
 
-  if (stage->is_sparse && high_corr_id == 0) {
-    // this is the route node in the sparse layer
-    // update the visit count of the stage
-    stage->visit_cnt += 1;
-  }
+  // if (stage->is_sparse && high_corr_id == 0) {
+  //   // this is the route node in the sparse layer
+  //   // update the visit count of the stage
+  //   stage->visit_cnt += 1;
+  // }
 
-  if (!stage->is_sparse) {
-    // this is the only node in the stage
-    // update the visit count of the stage
-    stage->visit_cnt += 1;
-  }
+  // if (!stage->is_sparse) {
+  //   // this is the only node in the stage
+  //   // update the visit count of the stage
+  //   stage->visit_cnt += 1;
+  // }
+
+  // LOG_TRITON_VERBOSE(
+  //     (std::string("PutNodeToPipeline: ") + pipeline_.str()).c_str());
 
   if (stage->is_sparse && high_corr_id > 0) {
     // this is the child node in the sparse layer
     // update the visit count of the parent node
+    // LOG_TRITON_VERBOSE("PutNodeToPipeline: update sparse stage");
     StagePtr last_sparse_stage;
     for (auto i = low_corr_id - 1; i >= 0; i--) {
       if (stage->is_sparse) {
@@ -210,7 +232,7 @@ FlowControllerFactory::PutNodeToPipeline(
           last_stage_node->children_visit_cnt.resize(high_corr_id);
         }
         if (last_stage_node->children.size() < high_corr_id) {
-          last_stage_node->children.resize(high_corr_id);
+          last_stage_node->children.resize(high_corr_id, nullptr);
         }
         if (last_stage_node->children_visit_time.size() < high_corr_id) {
           last_stage_node->children_visit_time.resize(high_corr_id);
@@ -225,10 +247,18 @@ FlowControllerFactory::PutNodeToPipeline(
   if (is_last_node) {
     // this is the last node in the pipeline
     // remove request_id from all nodes
+    // LOG_TRITON_VERBOSE("PutNodeToPipeline: is_last_node");
     for (auto& stage : pipeline_.stages) {
+      if (stage == nullptr) {
+        continue;
+      }
       for (auto& node : stage->nodes) {
+        if (node == nullptr) {
+          continue;
+        }
         node->activate_request.erase(request_id);
       }
+      stage->activate_request.erase(request_id);
     }
   }
 
@@ -236,9 +266,16 @@ FlowControllerFactory::PutNodeToPipeline(
   // that are not visited for 1 minute
   std::size_t microseconds = 60000000;
   for (auto& stage : pipeline_.stages) {
+    if (stage == nullptr) {
+      continue;
+    }
     for (auto& node : stage->nodes) {
+      if (node == nullptr) {
+        continue;
+      }
       auto visit = node->visit_time.begin();
-      while (visit != node->visit_time.end() && now - *visit > microseconds) {
+      while (visit != node->visit_time.end() && *visit > 0 &&
+             now - *visit > microseconds) {
         node->visit_time.pop_front();
         node->visit_cnt -= 1;
         visit = node->visit_time.begin();
@@ -247,7 +284,8 @@ FlowControllerFactory::PutNodeToPipeline(
       int k = 0;
       for (auto& children : node->children_visit_time) {
         auto visit = children.begin();
-        while (visit != children.end() && now - *visit > microseconds) {
+        while (visit != children.end() && *visit > 0 &&
+               now - *visit > microseconds) {
           children.pop_front();
           node->children_visit_cnt[k] -= 1;
           visit = children.begin();
@@ -258,40 +296,13 @@ FlowControllerFactory::PutNodeToPipeline(
 
 
     auto visit = stage->visit_time.begin();
-    while (visit != stage->visit_time.end() && now - *visit > microseconds) {
+    while (visit != stage->visit_time.end() && *visit > 0 &&
+           now - *visit > microseconds) {
       stage->visit_time.pop_front();
       stage->visit_cnt -= 1;
       visit = stage->visit_time.begin();
     }
   }
-
-  // if (visit_cnt_.find(node_id) == visit_cnt_.end()) {
-  //   visit_cnt_[node_id] = 0;
-  // }
-  // visit_cnt_[node_id] += 1;
-  // if (!stage->is_sparse) {
-  //   total_visit_cnt_ += 1;
-  // }
-
-
-  // if (visit_time_.find(node_id) == visit_time_.end()) {
-  //   visit_time_[node_id] = 0;
-  // }
-  // visit_time_[node_id] = MCIROSECONDS_SINCE_EPOCH;
-
-  // auto now = MCIROSECONDS_SINCE_EPOCH;
-  // std::vector<NodeID> delete_nodes;
-  // for (auto& visit : visit_time_) {
-  //   if (now - visit.second > 60000000) {
-  //     delete_nodes.push_back(visit.first);
-  //     total_visit_cnt_ -= 1;
-  //     visit_cnt_[visit.first] -= 1;
-  //   }
-  // }
-
-  // for (auto& node_id : delete_nodes) {
-  //   visit_time_.erase(node_id);
-  // }
 }
 
 // NodeTopologyPtr
@@ -330,6 +341,299 @@ FlowControllerFactory::PutNodeToPipeline(
 //     return nodes;
 //   }
 // }
+
+FlowControllerFactory::FlowControllerFactory() {}
+
+std::int64_t
+FlowControllerFactory::GetPrefetableSize()
+{
+  auto [live_memory, live_node_list] = GetTotalLiveParamSize();
+  std::int64_t prefetch_size =
+      std::min(PREFETCH_BUCKET_SIZE, MAX_LIVE_PARAMETERS - live_memory);
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::GetPrefetableSize: live_memory = " +
+       std::to_string(live_memory) +
+       " prefetch_size = " + std::to_string(prefetch_size))
+          .c_str());
+
+  return prefetch_size;
+}
+
+bool
+FlowControllerFactory::CreatePrefetchThreads(
+    const NodePtr& node, const SizeFilterFunc& func)
+{
+  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
+                      std::to_string(node->id))
+                         .c_str());
+  auto [removable_memory, removable_node_list] = GetLRUNodes();
+  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
+                      std::to_string(node->id) + " removable_memory = " +
+                      std::to_string(removable_memory) +
+                      " nodes = " + std::to_string(removable_node_list.size()))
+                         .c_str());
+  auto [prefetch_memory, prefetch_node_list] = func(PREFETCH_BUCKET_SIZE);
+  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
+                      std::to_string(node->id) +
+                      " prefetch_memory = " + std::to_string(prefetch_memory) +
+                      " nodes = " + std::to_string(prefetch_node_list.size()) +
+                      " free memory = " +
+                      std::to_string(DEFAULT_CUDA_MEM_CTL->GetFreeMemory()))
+                         .c_str());
+  // prefetch_memory = PREFETCH_BUCKET_SIZE;
+  if (!node->device.is_cuda())
+    prefetch_memory += node->byte_size;
+  // prefetch_node_list.push_back(node);
+
+  std::int64_t remove_size = -1;
+  CounterPtr remove_cnt = std::make_shared<std::atomic<int>>(0);
+
+  // std::atimic_int remove_cnt = 0;
+  if (prefetch_memory > CUDA_MEM_CTL(0)->GetFreeMemory()) {
+    remove_size =
+        prefetch_memory - CUDA_MEM_CTL(0)->GetFreeMemory() + node->byte_size;
+  }
+
+  if (remove_size > removable_memory) {
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreads: remove_size = " +
+         std::to_string(remove_size) +
+         " > removable_memory = " + std::to_string(removable_memory))
+            .c_str());
+    RELEASE_LOCKS(removable_node_list);
+    RELEASE_LOCKS(prefetch_node_list);
+    return false;
+  }
+
+  while (!removable_node_list.empty()) {
+    auto prefetch_node = removable_node_list.front();
+    if (remove_size < 0) {
+      break;
+    }
+    remove_size -= prefetch_node->byte_size;
+    remove_cnt->fetch_add(1);
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreads: remove node = " +
+         prefetch_node->GetModelInstanceInfo() +
+         " remain memory to remove = " + std::to_string(remove_size))
+            .c_str());
+    std::thread prefetch_thread(
+        FetchThreadFunc, prefetch_node, DISK_DEVICE, false, remove_cnt);
+    prefetch_thread.detach();
+    // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
+    removable_node_list.erase(removable_node_list.begin());
+  }
+
+  RELEASE_LOCKS(removable_node_list);
+
+  // FetchThreadFunc(prefetch_node_list.back(), DEFAULT_CUDA_DEVICE, true,
+  // remove_cnt);
+  // prefetch_node_list.pop_back();
+  std::thread prefetch_thread(
+      FetchThreadFunc, node, DEFAULT_CUDA_DEVICE, true, std::make_shared<std::atomic<int>>(0));
+  prefetch_thread.detach();
+  CUDA_MEM_CTL(0)->AllocateMemory(node->id, node->byte_size);
+
+  for (auto& prefetch_node : prefetch_node_list) {
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreads: prefetch node = " +
+         prefetch_node->GetModelInstanceInfo())
+            .c_str());
+    std::thread prefetch_thread(
+        FetchThreadFunc, prefetch_node, DEFAULT_CUDA_DEVICE, false, remove_cnt);
+    prefetch_thread.detach();
+
+    // Must allocate memory before prefetching avoid later model run into OOM
+    CUDA_MEM_CTL(0)->AllocateMemory(
+        prefetch_node->id, prefetch_node->byte_size);
+  }
+
+  return true;
+}
+
+void
+FlowControllerFactory::UpdateInitPrefetchNodes(
+    NodeMoveVec& prefetch_nodes, const SizeFilterFunc& func)
+{
+  auto [live_memory, live_node_list] = GetTotalLiveParamSize();
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::UpdateInitPrefetchNodes: live_memory = " +
+       std::to_string(live_memory) +
+       " live_nodes = " + std::to_string(live_node_list.size()))
+          .c_str());
+
+  auto [removable_memory, removable_node_list] = GetRemovableNodes();
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::UpdateInitPrefetchNodes: removable_memory = " +
+       std::to_string(removable_memory) +
+       " removable_nodes = " + std::to_string(removable_node_list.size()))
+          .c_str());
+
+  std::vector<std::int64_t> predetch_size_candidates = {
+      PREFETCH_BUCKET_SIZE, MAX_LIVE_PARAMETERS - live_memory,
+      DEFAULT_CUDA_MEM_CTL->GetFreeMemory() + removable_memory};
+  std::int64_t prefetch_size = *std::min_element(
+      predetch_size_candidates.begin(), predetch_size_candidates.end());
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::UpdateInitPrefetchNodes: prefetch_size = " +
+       std::to_string(prefetch_size) + " free memory = " +
+       std::to_string(DEFAULT_CUDA_MEM_CTL->GetFreeMemory() + removable_memory))
+          .c_str());
+
+  if (prefetch_size <= 0) {
+    return;
+  }
+
+  auto [prefetch_memory, prefetch_node_list] = func(prefetch_size);
+
+  for (auto& prefetch_node : prefetch_node_list) {
+    prefetch_node->memory_type = MemoryType::kEmplacing;
+    prefetch_nodes.push_back(
+        std::make_pair(prefetch_node, DEFAULT_CUDA_DEVICE));
+  }
+
+  LOG_TRITON_VERBOSE(("FlowControllerFactory::UpdateInitPrefetchNodes: "
+                      "prefetch_nodes size = " +
+                      std::to_string(prefetch_nodes.size()) +
+                      " total memory = " +
+                      std::to_string(DEFAULT_CUDA_MEM_CTL->GetFreeMemory()) +
+                      " prefetch_size = " + std::to_string(prefetch_size) +
+                      " prefetch_memory = " + std::to_string(prefetch_memory))
+                         .c_str());
+
+  // std::int64_t total_prefetch_memory = prefetch_memory;
+  // for (auto& prefetch_node : prefetch_nodes) {
+  //   total_prefetch_memory += prefetch_node.first->byte_size;
+  // }
+
+  bool memory_exceeded =
+      prefetch_memory > DEFAULT_CUDA_MEM_CTL->GetFreeMemory();
+  std::int64_t remove_size =
+      prefetch_memory - DEFAULT_CUDA_MEM_CTL->GetFreeMemory();
+
+  if (memory_exceeded) {
+    std::int64_t size_removed = 0;
+    for (auto& remove_node : removable_node_list) {
+      remove_node->memory_type = MemoryType::kEvicting;
+      prefetch_nodes.push_back(std::make_pair(remove_node, DISK_DEVICE));
+      LOG_TRITON_VERBOSE(
+          ("FlowControllerFactory::PrefetchNode: remove_node = " +
+           remove_node->GetModelInstanceInfo())
+              .c_str());
+      size_removed += remove_node->byte_size;
+      if (size_removed > remove_size) {
+        break;
+      }
+    }
+  }
+
+  // allocate memory for prefetch nodes to GPUs
+  // remove nodes from GPU memory updates after actual execution
+  for (auto& prefetch_node : prefetch_nodes) {
+    if (prefetch_node.second == DEFAULT_CUDA_DEVICE) {
+      UpdateMemoryManager(
+          prefetch_node.first->device, prefetch_node.second,
+          prefetch_node.first->byte_size);
+      LOG_TRITON_VERBOSE(
+          ("FlowControllerFactory::PrefetchNode: prefetch_node = " +
+           prefetch_node.first->GetModelInstanceInfo())
+              .c_str());
+    }
+  }
+}
+
+void
+FlowControllerFactory::UpdateMemoryManager(
+    const Device& from, const Device& to, const std::size_t& size)
+{
+  if (from == to) {
+    return;
+  }
+
+  if (from == CPU_DEVICE && to == DEFAULT_CUDA_DEVICE) {
+    SYS_MEM_CTL->FreeMemory(size);
+    DEFAULT_CUDA_MEM_CTL->AllocateMemory(size);
+  }
+
+  if (from == DEFAULT_CUDA_DEVICE && to == CPU_DEVICE) {
+    DEFAULT_CUDA_MEM_CTL->FreeMemory(size);
+    SYS_MEM_CTL->AllocateMemory(size);
+  }
+
+  if (from == DISK_DEVICE && to == DEFAULT_CUDA_DEVICE) {
+    DEFAULT_CUDA_MEM_CTL->AllocateMemory(size);
+  }
+
+  if (from == DISK_DEVICE && to == CPU_DEVICE) {
+    SYS_MEM_CTL->AllocateMemory(size);
+  }
+
+  if (from == DEFAULT_CUDA_DEVICE && to == DISK_DEVICE) {
+    DEFAULT_CUDA_MEM_CTL->FreeMemory(size);
+  }
+
+  if (from == CPU_DEVICE && to == DISK_DEVICE) {
+    SYS_MEM_CTL->FreeMemory(size);
+  }
+
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::UpdateMemoryManager: from = " + from.str() +
+       " to = " + to.str() + " size = " + std::to_string(size) +
+       " SYS_MEM_CTL = " + std::to_string(SYS_MEM_CTL->GetFreeMemory()) +
+       " DEFAULT_CUDA_MEM_CTL = " +
+       std::to_string(DEFAULT_CUDA_MEM_CTL->GetFreeMemory()))
+          .c_str());
+}
+
+void
+FlowControllerFactory::UpdateMemoryManager(const NodeMoveVec& prefetch_nodes)
+{
+  for (auto& prefetch_node : prefetch_nodes) {
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::UpdateMemoryManager: node_id = " +
+         std::to_string(prefetch_node.first->corr_id) +
+         " device = " + prefetch_node.first->device.str() +
+         " target device = " + prefetch_node.second.str())
+            .c_str());
+    // move from cpu to gpu
+    if (prefetch_node.second == DEFAULT_CUDA_DEVICE &&
+        prefetch_node.first->device == CPU_DEVICE) {
+      SYS_MEM_CTL->FreeMemory(prefetch_node.first->byte_size);
+      DEFAULT_CUDA_MEM_CTL->AllocateMemory(prefetch_node.first->byte_size);
+    }
+
+    // move from gpu to cpu
+    if (prefetch_node.second == CPU_DEVICE &&
+        prefetch_node.first->device == DEFAULT_CUDA_DEVICE) {
+      DEFAULT_CUDA_MEM_CTL->FreeMemory(prefetch_node.first->byte_size);
+      SYS_MEM_CTL->AllocateMemory(prefetch_node.first->byte_size);
+    }
+
+    // move from gpu to disk
+    if (prefetch_node.second == DISK_DEVICE &&
+        prefetch_node.first->device == DEFAULT_CUDA_DEVICE) {
+      DEFAULT_CUDA_MEM_CTL->FreeMemory(prefetch_node.first->byte_size);
+    }
+
+    // move from disk to gpu
+    if (prefetch_node.second == DEFAULT_CUDA_DEVICE &&
+        prefetch_node.first->device == DISK_DEVICE) {
+      DEFAULT_CUDA_MEM_CTL->AllocateMemory(prefetch_node.first->byte_size);
+    }
+
+    // move from cpu to disk
+    if (prefetch_node.second == DISK_DEVICE &&
+        prefetch_node.first->device == CPU_DEVICE) {
+      SYS_MEM_CTL->FreeMemory(prefetch_node.first->byte_size);
+    }
+
+    // move from disk to cpu
+    if (prefetch_node.second == CPU_DEVICE &&
+        prefetch_node.first->device == DISK_DEVICE) {
+      SYS_MEM_CTL->AllocateMemory(prefetch_node.first->byte_size);
+    }
+  }
+}
 
 void
 FlowControllerFactory::DispatchNodeMemoryInThread(
@@ -373,11 +677,17 @@ FlowControllerFactory::DispatchNodeMemory(
 FilterResult
 FlowControllerFactory::GetTotalLiveParamSize()
 {
-  std::size_t size = 0;
+  std::int64_t size = 0;
   NodePtrList node_ptr_list;
 
   for (auto& stage : pipeline_.stages) {
+    if (stage == nullptr) {
+      continue;
+    }
     for (auto& node_body : stage->nodes) {
+      if (node_body == nullptr) {
+        continue;
+      }
       auto node = node_body->node;
       if (node->memory_type == MemoryType::kLocked) {
         size += node->byte_size;
@@ -385,6 +695,9 @@ FlowControllerFactory::GetTotalLiveParamSize()
       }
     }
   }
+
+  LOG_TRITON_VERBOSE(
+      ("Total live param size: " + std::to_string(size)).c_str());
   return std::make_pair(size, node_ptr_list);
 }
 
@@ -406,11 +719,17 @@ FlowControllerFactory::GetTotalLiveParamSize()
 FilterResult
 FlowControllerFactory::GetTotalGPUParamSize()
 {
-  std::size_t size = 0;
+  std::int64_t size = 0;
   NodePtrList node_ptr_list;
 
   for (auto& stage : pipeline_.stages) {
+    if (stage == nullptr) {
+      continue;
+    }
     for (auto& node_body : stage->nodes) {
+      if (node_body == nullptr) {
+        continue;
+      }
       auto node = node_body->node;
       if (node->device == DEFAULT_CUDA_DEVICE) {
         size += node->byte_size;
@@ -418,6 +737,8 @@ FlowControllerFactory::GetTotalGPUParamSize()
       }
     }
   }
+
+  LOG_TRITON_VERBOSE(("Total GPU param size: " + std::to_string(size)).c_str());
   return std::make_pair(size, node_ptr_list);
 }
 
@@ -441,18 +762,29 @@ FlowControllerFactory::GetTotalGPUParamSize()
 //   return std::make_pair(size, node_ptr_list);
 // }
 
-FilterResult
-FlowControllerFactory::GetRemovableNodes()
-{
-  std::size_t size = 0;
-  NodePtrList node_ptr_list;
 
+FilterResult
+FlowControllerFactory::GetLRUNodes()
+{
+  NodePtrList node_ptr_list;
+  std::int64_t size = 0;
   for (auto& stage : pipeline_.stages) {
+    if (stage == nullptr) {
+      continue;
+    }
     for (auto& node_body : stage->nodes) {
+      if (node_body == nullptr) {
+        continue;
+      }
       auto node = node_body->node;
-      if (node->memory_type == MemoryType::kReady) {
-        size += node->byte_size;
-        node_ptr_list.push_back(node);
+      if (node->mutex.try_lock()) {
+        // if (pthread_mutex_trylock(node->mutex.getPthreadMutex()) == 0) {
+        if (node->device.is_cuda()) {
+          size += node->byte_size;
+          // node->mutex.unlock();
+          node_ptr_list.push_back(node);
+        } else
+          node->mutex.unlock();
       }
     }
   }
@@ -461,6 +793,48 @@ FlowControllerFactory::GetRemovableNodes()
       [](const NodePtr& a, const NodePtr& b) {
         return a->last_access_time < b->last_access_time;
       });
+  return std::make_pair(size, node_ptr_list);
+}
+
+FilterResult
+FlowControllerFactory::GetRemovableNodes()
+{
+  std::int64_t size = 0;
+  NodePtrList node_ptr_list;
+
+  for (auto& stage : pipeline_.stages) {
+    if (stage == nullptr) {
+      continue;
+    }
+    for (auto& node_body : stage->nodes) {
+      if (node_body == nullptr) {
+        continue;
+      }
+      auto node = node_body->node;
+      if (node->memory_type == MemoryType::kReady) {
+        size += node->byte_size;
+        node_ptr_list.push_back(node);
+      }
+    }
+  }
+
+  LOG_TRITON_VERBOSE(
+      ("Total removable param size: " + std::to_string(size) +
+       " Number of nodes: " + std::to_string(node_ptr_list.size()))
+          .c_str());
+
+  if (node_ptr_list.size() == 0) {
+    LOG_TRITON_ERROR("No removable nodes found");
+  } else {
+    std::sort(
+        node_ptr_list.begin(), node_ptr_list.end(),
+        [](const NodePtr& a, const NodePtr& b) {
+          return a->last_access_time < b->last_access_time;
+        });
+    // LOG_TRITON_VERBOSE(
+    //     ("First node: " + node_ptr_list[0]->GetModelInstanceInfo()).c_str());
+  }
+
   return std::make_pair(size, node_ptr_list);
 }
 
@@ -481,30 +855,3 @@ FlowControllerFactory::GetRemovableNodes()
 //   auto node_ptr_list = GetNodesByFilter(filter, node_id);
 //   return std::make_pair(size, node_ptr_list);
 // }
-
-FilterResult
-FlowControllerFactory::GetStandbyChildBySizeLimit(
-    const NodePtr& node, std::size_t size_limit)
-{
-  std::size_t size = 0;
-  NodePtrList node_ptr_list;
-
-  // std::uint64_t stage_idx = node->id & 0x00000000FFFFFFFF;
-  // std::uint64_t node_idx = (node->id >> 32) - 1;
-
-  for (std::uint64_t stage_idx = node->id & 0x00000000FFFFFFFF;
-       stage_idx < pipeline_.stages.size(); ++stage_idx) {
-    auto stage = pipeline_.stages[stage_idx];
-    for (auto& node_body : stage->nodes) {
-      auto node = node_body->node;
-      if (node->byte_size > size_limit) {
-        size_limit -= node->byte_size;
-      }
-      if (node->memory_type == MemoryType::kStandBy) {
-        size += node->byte_size;
-        node_ptr_list.push_back(node);
-      }
-    }
-  }
-  return std::make_pair(size, node_ptr_list);
-}

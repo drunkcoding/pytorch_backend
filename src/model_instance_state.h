@@ -47,8 +47,8 @@ class ModelInstanceState
   // Execute...
   void ProcessRequests(
       TRITONBACKEND_Request** requests, const uint32_t request_count);
-  void ProcessRequestsInLoop(
-      TRITONBACKEND_Request** requests, const uint32_t request_count);
+//   void ProcessRequestsInLoop(
+//       TRITONBACKEND_Request** requests, const uint32_t request_count);
 
 //   void ProcessTritonRequest();
 
@@ -103,7 +103,7 @@ class ModelInstanceState
   std::shared_ptr<torch::jit::script::Module> torch_model_;
   //   torch::jit::script::Module* torch_model_;
   NodePtr node_;
-  std::mutex exec_mutex_;
+//   std::mutex exec_mutex_;
 //   std::condition_variable exec_cv_;
   torch::Device device_;
 
@@ -130,8 +130,8 @@ class ModelInstanceState
   cudaEvent_t compute_output_start_event_;
 
 
-  std::mutex mutex_;
-  std::condition_variable cv_;
+//   std::mutex mutex_;
+//   std::condition_variable cv_;
 };
 
 

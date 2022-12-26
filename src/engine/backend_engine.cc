@@ -66,9 +66,7 @@ BackendEngine::BackendEngine()
   // loop_->Start();
   loop_thread_ = std::make_shared<muduo::net::EventLoopThread>(
       INIT_INS(BackendEngine), "BackendEngine");
-  LOG_TRITON_VERBOSE("BackendEngine::BackendEngine");
   loop_ = loop_thread_->startLoop();
-  LOG_TRITON_VERBOSE("BackendEngine::BackendEngine");
   op_manager_ = std::make_shared<BackendOpManager>(loop_);
 }
 
@@ -119,7 +117,7 @@ void
 BackendEngine::DispachRequest(const BackendRequestPtr& request)
 {
   // auto backend_request = std::static_pointer_cast<BackendOpRequest>(request);
-  LOG_TRITON_VERBOSE("BackendEngineHandle::DispachRequest");
+  // LOG_TRITON_VERBOSE("BackendEngineHandle::DispachRequest");
   switch (request->op_type) {
     case BackendOpType::kLoad:
       op_manager_->LoadModel(request);
@@ -133,4 +131,58 @@ BackendEngine::DispachRequest(const BackendRequestPtr& request)
     default:
       break;
   }
+}
+
+BackendEngineRegistry::BackendEngineRegistry()
+{
+  // backend_engine_ = std::make_shared<BackendEngine>();
+  // backend_engine_ = std::make_shared<LibtorchEngine>();
+}
+
+BackendEngineRegistry::~BackendEngineRegistry() {}
+
+void
+BackendEngineRegistry::RegisterBackendEngine(
+    const std::size_t key, const BackendEnginePtr& engine)
+{
+  auto it = engine_map_.find(key);
+  if (it != engine_map_.end()) {
+    LOG_TRITON_VERBOSE(
+        "BackendEngineRegistry::RegisterBackendEngine: key already exists");
+    return;
+  }
+  LOG_TRITON_VERBOSE(("BackendEngineRegistry::RegisterBackendEngine: key " +
+                      std::to_string(key))
+                         .c_str());
+  engine_map_.insert(std::make_pair(key, engine));
+}
+
+void
+BackendEngineRegistry::UnregisterBackendEngine(
+    const std::size_t key, const BackendEnginePtr& engine)
+{
+  auto it = engine_map_.find(key);
+  if (it == engine_map_.end()) {
+    LOG_TRITON_VERBOSE(
+        "BackendEngineRegistry::UnregisterBackendEngine: key not exists");
+    return;
+  }
+  LOG_TRITON_VERBOSE(("BackendEngineRegistry::UnregisterBackendEngine: key " +
+                      std::to_string(key))
+                         .c_str());
+  engine_map_.erase(it);
+}
+
+BackendEnginePtr
+BackendEngineRegistry::GetBackendEngine(const std::size_t key)
+{
+  auto it = engine_map_.find(key);
+  if (it == engine_map_.end()) {
+    LOG_TRITON_VERBOSE(
+        ("BackendEngineRegistry::GetBackendEngine: key not exists " +
+         std::to_string(key))
+            .c_str());
+    return nullptr;
+  }
+  return it->second;
 }

@@ -31,7 +31,7 @@ Maximum number of parameter elements to fetch ahead of use. Used by ZeRO3,
 ZeRO3-Offload, ZeRO-Infinity, and ZeRO-Inference.
 */
 #ifndef PREFETCH_BUCKET_SIZE
-#define PREFETCH_BUCKET_SIZE 50000000UL
+#define PREFETCH_BUCKET_SIZE 500000000LL
 #endif
 
 /*
@@ -39,7 +39,7 @@ The maximum number of parameters resident per GPU before releasing. Smaller
 values use less memory, but perform more communication.
 */
 #ifndef MAX_LIVE_PARAMETERS
-#define MAX_LIVE_PARAMETERS 10000000000UL
+#define MAX_LIVE_PARAMETERS 1500000000LL
 #endif
 
 
@@ -48,5 +48,5 @@ Do not release a parameter if it will be reused within this threshold of
 parameters. Smaller values use less memory, but perform more communication.
 */
 #ifndef MAX_REUSE_DISTANCE
-#define MAX_REUSE_DISTANCE 1000000000UL
+#define MAX_REUSE_DISTANCE 1000000000LL
 #endif

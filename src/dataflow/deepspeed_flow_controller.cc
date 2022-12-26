@@ -5,14 +5,14 @@
 
 void
 DeepSpeedFlowController::RecordNode(
-    const InputIDPtr& input_id, const NodePtr& node,
-    const NodeMetaPtr& node_meta)
+    const InputIDPtr& input_id, const NodePtr& node)
 {
+  // std::size_t request_id = std::hash<std::string>{}(input_id->request_id);
+  // LOG_TRITON_VERBOSE("DeepSpeedFlowController::RecordNode");
+  PutNodeToPipeline(input_id->request_id, input_id->correlation_id, node);
+
   NodeID node_id = node->id;
-  std::size_t memory_size = node->byte_size;
-  std::size_t request_id = std::hash<std::string>{}(input_id->request_id);
-  LOG_TRITON_VERBOSE("DeepSpeedFlowController::RecordNode");
-  PutNodeToPipeline(request_id, input_id->correlation_id, node);
+  auto memory_size = node->byte_size;
   if (node_location_.find(node_id) == node_location_.end()) {
     if (free_cpu_memory_ > memory_size) {
       node_location_.insert({node_id, CPU_DEVICE});
@@ -27,25 +27,33 @@ DeepSpeedFlowController::RecordNode(
 NodeMoveVec
 DeepSpeedFlowController::PrefetchNode(const NodePtr& node)
 {
-  NodeID node_id = node->id;
-  LOG_TRITON_VERBOSE("DeepSpeedFlowController::PrefetchNode");
-  NodeMoveVec prefetch_nodes;
-  if (node->memory_type == MemoryType::kStandBy) {
-    node->memory_type = MemoryType::kMoving;
-    prefetch_nodes.push_back(std::make_pair(node, DEFAULT_CUDA_DEVICE));
-  } 
+  // // if node is already in GPU or mving towards GPU
+  // // let the model thread wait for the node to be loaded
+  // if (node->device == DEFAULT_CUDA_DEVICE ||
+  //     node->memory_type == MemoryType::kEmplacing) {
+  //   // lock here for inference
+  //   node->memory_type = MemoryType::kLocked;
+  // }
 
-  // Assign lock flag here for parameters immediately required
-  // Wait for fetching at its own thread
-  node->memory_type = MemoryType::kLocked;
+  // // if node is mving out of GPU
+  // // let the executiuon finished and decide later
+  // if (node->device != DEFAULT_CUDA_DEVICE &&
+  //     node->memory_type != MemoryType::kStandBy) {
+  //   return NodeMoveVec();
+  // }
 
-  LOG_TRITON_VERBOSE(("DeepSpeedFlowController::PrefetchNode: node_id = " +
-                      std::to_string(node_id))
-                         .c_str());
+  // if (gpu_memory_manager_->GetTotalMemory() <= 0) {
+  //   // We are out of space here, let's wait for other models to be unloaded
+  //   return NodeMoveVec();
+  // }
 
-  if (pipeline_.stages.empty()) {
-    return prefetch_nodes;
-  }
+  // if (node->memory_type == MemoryType::kStandBy) {
+  //   // lock here for inference
+  //   node->memory_type = MemoryType::kLocked;
+  //   prefetch_nodes.push_back(std::make_pair(node, DEFAULT_CUDA_DEVICE));
+  // }
+
+  // NodeID node_id = node->id;
 
   /*
   This method does the following (in order):
@@ -53,76 +61,56 @@ DeepSpeedFlowController::PrefetchNode(const NodePtr& node)
       2. kick off fetch for next few parameters we will need later (prefetch)
       3. block on parameters in immediately required sub module
   */
+ LOG_TRITON_VERBOSE(("DeepSpeedFlowController::PrefetchNode " + node->GetModelInstanceInfo()).c_str());
+  NodeMoveVec prefetch_nodes;
+  SizeFilterFunc size_filter = THIS_BIND_ARGS(
+      DeepSpeedFlowController, GetStandbyChildBySizeLimit, node,
+      std::placeholders::_1);
+  // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
 
-  auto [live_memory, live_node_list] = GetTotalLiveParamSize();
-  LOG_TRITON_VERBOSE(("DeepSpeedFlowController::PrefetchNode: live_memory = " +
-                      std::to_string(live_memory) + " MAX_LIVE_PARAMETERS = " +
-                      std::to_string(MAX_LIVE_PARAMETERS))
-                         .c_str());
-
-  auto [gpu_memory, gpu_node_list] = GetTotalGPUParamSize();
-  LOG_TRITON_VERBOSE(
-      ("DeepSpeedFlowController::PrefetchNode: gpu_memory = " +
-       std::to_string(gpu_memory) +
-       " free_gpu_memory_ = " + std::to_string(free_gpu_memory_) +
-       " real free gpu memory = " + std::to_string(GetFreeDeviceMemory(0)))
-          .c_str());
-
-  std::size_t prefetch_size =
-      std::min(PREFETCH_BUCKET_SIZE, MAX_LIVE_PARAMETERS - live_memory);
-  auto [prefetch_memory, prefetch_node_list] =
-      GetStandbyChildBySizeLimit(node, prefetch_size);
-  LOG_TRITON_VERBOSE(
-      ("DeepSpeedFlowController::PrefetchNode: prefetch_size = " +
-       std::to_string(prefetch_size) +
-       " prefetch_memory = " + std::to_string(prefetch_memory))
-          .c_str());
-
-  for (auto& prefetch_node : prefetch_node_list) {
-    prefetch_node->memory_type = MemoryType::kMoving;
-    prefetch_nodes.push_back(
-        std::make_pair(prefetch_node, DEFAULT_CUDA_DEVICE));
+  while (!CreatePrefetchThreads(node, size_filter)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  if (prefetch_memory + gpu_memory > free_gpu_memory_) {
-    // not enough memory to prefetch, remove some of the non-live nodesaccording
-    // to last access time
-    std::int64_t remove_size = prefetch_memory + gpu_memory - free_gpu_memory_;
-
-    auto [removable_memory, removable_node_list] = GetRemovableNodes();
-    LOG_TRITON_VERBOSE(
-        ("DeepSpeedFlowController::PrefetchNode: remove_size = " +
-         std::to_string(remove_size))
-            .c_str());
-
-    for (auto& remove_node : removable_node_list) {
-      remove_node->memory_type = MemoryType::kMoving;
-      auto device_it = node_location_.find(remove_node->id);
-      prefetch_nodes.push_back(std::make_pair(remove_node, device_it->second));
-      // DispatchNodeMemoryInThread(remove_node, device_it->second);
-      remove_size -= remove_node->byte_size;
-      if (remove_size <= 0) {
-        break;
-      }
-    }
-    // free_gpu_memory_ -= remove_size;
-  }
-
-  for (auto& prefetch_node : prefetch_nodes) {
-    if (prefetch_node.second != DEFAULT_CUDA_DEVICE) {
-      free_gpu_memory_ += prefetch_node.first->byte_size;
-    }
-  }
-
-  for (auto& prefetch_node : prefetch_nodes) {
-    if (prefetch_node.second == DEFAULT_CUDA_DEVICE) {
-      free_gpu_memory_ += prefetch_node.first->byte_size;
-    }
-  }
-
-  // while (node->memory_type != MemoryType::kReady) {
-  //   std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  // }
   return prefetch_nodes;
   // MAX_REUSE_DISTANCE is not implemented yet
+}
+
+FilterResult
+DeepSpeedFlowController::GetStandbyChildBySizeLimit(
+    const NodePtr& node, const std::int64_t size_limit)
+{
+  // std::int64_t size = node->byte_size;
+  // NodePtrList node_ptr_list;
+
+  // if (size > size_limit) {
+  //   return std::make_pair(0, node_ptr_list);
+  // }
+
+  // // if (node->memory_type == MemoryType::kStandBy)
+  // node_ptr_list.push_back(node);
+
+  std::int64_t size = 0;
+  NodePtrList node_ptr_list;
+
+  for (std::uint64_t stage_idx = (node->corr_id & 0x00000000FFFFFFFF) + 1;
+       stage_idx < pipeline_.stages.size(); ++stage_idx) {
+    auto stage = pipeline_.stages[stage_idx];
+    if (stage == nullptr) {
+      break;
+    }
+    for (auto& node_body : stage->nodes) {
+      if (node_body == nullptr) {
+        continue;
+      }
+      if (size + node_body->node->byte_size > size_limit) {
+        return std::make_pair(size, node_ptr_list);
+      }
+      if (!node_body->node->device.is_cuda() && node_body->node->mutex.try_lock()) {
+        size += node_body->node->byte_size;
+        node_ptr_list.push_back(node_body->node);
+      }
+    }
+  }
+  return std::make_pair(size, node_ptr_list);
 }

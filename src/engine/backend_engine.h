@@ -47,3 +47,20 @@ class BackendEngine : public std::enable_shared_from_this<BackendEngine>,
   std::shared_ptr<BackendOpManager> op_manager_;
 };
 typedef std::shared_ptr<BackendEngine> BackendEnginePtr;
+
+class BackendEngineRegistry : public muduo::noncopyable {
+ public:
+  BackendEngineRegistry();
+  ~BackendEngineRegistry();
+  DISABLE_COPY_AND_ASSIGN(BackendEngineRegistry)
+  STATIC_GET_INSTANCE(BackendEngineRegistry)
+
+  void RegisterBackendEngine(const std::size_t key, const BackendEnginePtr& engine);
+  void UnregisterBackendEngine(const std::size_t key, const BackendEnginePtr& engine);
+
+  BackendEnginePtr GetBackendEngine(const std::size_t key);
+
+ private:
+  std::unordered_map<std::size_t, BackendEnginePtr> engine_map_;
+};
+// static const std::unique_ptr<BackendEngineRegistry> kBackendReg = std::make_unique<BackendEngineRegistry>();

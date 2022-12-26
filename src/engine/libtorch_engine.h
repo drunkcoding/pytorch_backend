@@ -31,7 +31,7 @@ class LibtorchEngine : public std::enable_shared_from_this<LibtorchEngine> {
   LibtorchEngine();
   ~LibtorchEngine();
   // DEFAULT_CLASS_MEMBER(LibtorchEngine)
-  // STATIC_GET_INSTANCE(LibtorchEngine)
+  STATIC_GET_INSTANCE(LibtorchEngine)
   // DISABLE_COPY_AND_ASSIGN(LibtorchEngine)
 
   static void ThreadInit(muduo::net::EventLoop* loop) {}
