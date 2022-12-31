@@ -134,8 +134,10 @@ elseif ("${CONTROLLER_TYPE}" STREQUAL "counter")
   add_compile_definitions(ENABLE_COUNTER_FLOW_CONTROLLER)
 elseif ("${CONTROLLER_TYPE}" STREQUAL "prefetch")
   add_compile_definitions(ENABLE_PREFETCH_FLOW_CONTROLLER)
+elseif ("${CONTROLLER_TYPE}" STREQUAL "nonfetch")
+  add_compile_definitions(ENABLE_NONFETCH_FLOW_CONTROLLER)
 else()
-  message(FATAL_ERROR "CONTROLLER_TYPE is not set")
+  message(FATAL_ERROR "CONTROLLER_TYPE is not set, must be one of deepspeed/counter/prefetch")
 endif()
 
 #

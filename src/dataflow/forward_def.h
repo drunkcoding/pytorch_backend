@@ -31,7 +31,7 @@ Maximum number of parameter elements to fetch ahead of use. Used by ZeRO3,
 ZeRO3-Offload, ZeRO-Infinity, and ZeRO-Inference.
 */
 #ifndef PREFETCH_BUCKET_SIZE
-#define PREFETCH_BUCKET_SIZE 500000000LL
+#define PREFETCH_BUCKET_SIZE 1000000000LL
 #endif
 
 /*

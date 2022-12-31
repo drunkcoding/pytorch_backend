@@ -1,13 +1,16 @@
 #pragma once
 
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cuda_runtime_api.h>
+
 #include <memory>
 
 #include "log_utils.h"
+#include "muduo/base/Mutex.h"
 #include "state.h"
 #include "time_utils.h"
 #include "torch_utils.h"
-
-#include "muduo/base/Mutex.h"
 
 /*
  * The datastructure for topology is as follow:
@@ -16,6 +19,24 @@
  * all sparse
  * 3. Pipeline: a list of stages that represents the whole topology
  */
+
+inline void
+RemoveModuleFromCache(torch::jit::script::Module** model)
+{
+  for (auto it = (*model)->parameters().begin();
+       it != (*model)->parameters().end(); ++it) {
+    (*it).unsafeReleaseIntrusivePtr().reset();
+  }
+
+
+  for (auto it = (*model)->buffers().begin(); it != (*model)->buffers().end();
+       ++it) {
+    (*it).unsafeReleaseIntrusivePtr().reset();
+  }
+
+  delete *model;
+  *model = nullptr;
+}
 
 struct Node {
   torch::jit::script::Module* model;  // always use raw pointer, since we need
@@ -27,7 +48,8 @@ struct Node {
   std::int64_t byte_size;
   std::size_t last_access_time;
   Device device;
-
+  Device default_device;
+  cudaStream_t stream;
 
   // for fetch thread synchronization
   // muduo::MutexLock mutex;
@@ -39,8 +61,8 @@ struct Node {
  public:
   explicit Node(const std::string& model_path)
       : id(std::hash<std::string>{}(model_path)), corr_id(0), byte_size(0),
-        last_access_time(MCIROSECONDS_SINCE_EPOCH), device(DISK_DEVICE),
-        model_path_(model_path)
+        last_access_time(MCIROSECONDS_SINCE_EPOCH), device(CPU_DEVICE),
+        default_device(DEFAULT_CUDA_DEVICE), model_path_(model_path)
   {
     model = new ScriptModule(torch::jit::load(model_path));
     std::int64_t param_size = 0;
@@ -78,19 +100,28 @@ struct Node {
     // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
     torch::InferenceMode infer_guard(true);
 
+    auto move_device =
+        (target_device.is_cuda()) ? default_device : target_device;
+
     // In our context, lazy device stays on disk
     if (target_device == DISK_DEVICE) {
-      delete model;
-      model = nullptr;
+      RemoveModuleFromCache(&model);
+      if (device.is_cuda()) {
+        c10::cuda::CUDACachingAllocator::emptyCache();
+      }
+      // if (device.is_cpu())
+      //   RemoveModuleFromCache(&model);
     } else {
+      at::cuda::CUDAStreamGuard guard(
+          at::cuda::getStreamFromExternal(stream, default_device.index()));
       if (model == nullptr) {
-        model = new ScriptModule(torch::jit::load(model_path_, target_device));
+        model = new ScriptModule(torch::jit::load(model_path_, move_device));
       } else {
-        model->to(target_device);
+        model->to(move_device);
       }
     }
 
-    device = target_device;
+    device = move_device;
   }
 };
 typedef std::shared_ptr<Node> NodePtr;
@@ -123,10 +154,11 @@ struct Stage {
   bool is_sparse;
   std::vector<NodeBodyPtr> nodes;
   std::size_t visit_cnt;
+  std::int64_t byte_size;
   std::deque<std::size_t> visit_time;
   std::unordered_set<std::size_t> activate_request;
-  Stage() : is_sparse(false), visit_cnt(0) {}
-  Stage(bool is_sparse) : is_sparse(is_sparse), visit_cnt(0) {}
+  Stage() : is_sparse(false), visit_cnt(0), byte_size(0) {}
+  Stage(bool is_sparse) : is_sparse(is_sparse), visit_cnt(0), byte_size(0) {}
 
   std::string str() const noexcept
   {

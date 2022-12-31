@@ -80,9 +80,19 @@ PrefetchFlowController::PrefetchNode(const NodePtr& node)
 
   SizeFilterFunc size_filter = THIS_BIND_ARGS(
       PrefetchFlowController, GetStandbyChildByFreq, node,
-      std::placeholders::_1);
+      std::placeholders::_1, std::placeholders::_2);
   // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
-  CreatePrefetchThreads(node, size_filter);
+  bool gpu_prefetch = false;
+  bool cpu_prefetch = false;
+
+  do {
+    if (!gpu_prefetch)
+      gpu_prefetch =
+          CreatePrefetchThreads(node, size_filter, DEFAULT_CUDA_DEVICE);
+    if (!cpu_prefetch)
+      cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while (!gpu_prefetch || !cpu_prefetch);
 
   return prefetch_nodes;
 }
@@ -103,9 +113,9 @@ sort_indexes(const std::vector<T>& v)
 
 FilterResult
 PrefetchFlowController::GetStandbyChildByFreq(
-    const NodePtr& node, const std::size_t size_limit)
+    const NodePtr& node, const std::size_t size_limit, const Device& device)
 {
-  NodeID current_node_id = node->id;
+  NodeID current_node_id = node->corr_id;
   std::size_t low_corr_id = current_node_id & 0xFFFFFFFF;  // stage id
   std::size_t high_corr_id = current_node_id >> 32;        // request id
 
@@ -116,6 +126,9 @@ PrefetchFlowController::GetStandbyChildByFreq(
     return std::make_pair(total_size, node_ptr_list);
   }
 
+  if (pipeline_.stages[low_corr_id] == nullptr) {
+    return std::make_pair(total_size, node_ptr_list);
+  }
 
   auto current_node_body =
       pipeline_.stages[low_corr_id]
@@ -127,9 +140,7 @@ PrefetchFlowController::GetStandbyChildByFreq(
     // Due to MoE design, we only process layer by layer
     auto stage = pipeline_.stages[low_corr_id];
 
-    if (stage == nullptr) {
-      break;
-    }
+    BREAK_IF_NULL(stage);
 
     if (stage->is_sparse) {
       // Sparse stage, we only prefetch the first layer
@@ -139,16 +150,39 @@ PrefetchFlowController::GetStandbyChildByFreq(
         visited_sparse_nodes.pop_front();
         auto children = node_body->children;
         auto children_cnt = node_body->children_visit_cnt;
+
+        // keep only not null from children and children_cnt
+        children.erase(
+            std::remove_if(
+                children.begin(), children.end(),
+                [](const NodeBodyPtr& node_body) {
+                  return node_body == nullptr;
+                }),
+            children.end());
+        children_cnt.erase(
+            std::remove_if(
+                children_cnt.begin(), children_cnt.end(),
+                [](const std::size_t& cnt) { return cnt == 0; }),
+            children_cnt.end());
+
         // sort node child visit cnt decending
         auto argsort = sort_indexes(children_cnt);
-        for (int j = 0; j < 3; j++) {
+        std::size_t layer_size = argsort.size();
+        std::size_t max_layer_fetch_size = 50;
+
+        auto low_idx = (device.is_cuda()) ? 0 : 1;
+        auto high_idx = std::min(
+            low_idx + max_layer_fetch_size * ((device.is_cuda()) ? 1 : 8),
+            layer_size);
+        for (std::size_t j = low_idx; j < high_idx; j++) {
           if (node_body->children_visit_cnt[argsort[j]] == 0) {
             break;
           }
           if (total_size + children[j]->node->byte_size > size_limit) {
             return std::make_pair(total_size, node_ptr_list);
           }
-          if (!children[j]->node->device.is_cuda() &&
+          if (((!children[j]->node->device.is_cuda() && device.is_cuda()) ||
+               (device.is_cpu() && children[j]->node->device == DISK_DEVICE)) &&
               children[j]->node->mutex.try_lock()) {
             total_size += children[j]->node->byte_size;
             node_ptr_list.push_back(children[j]->node);
@@ -162,13 +196,12 @@ PrefetchFlowController::GetStandbyChildByFreq(
     } else {
       // Dense stage
       auto node_body = stage->nodes[0];
-      if (node_body == nullptr) {
-        break;
-      }
+      BREAK_IF_NULL(node_body);
       if (total_size + node_body->node->byte_size > size_limit) {
         return std::make_pair(total_size, node_ptr_list);
       }
-      if (!node_body->node->device.is_cuda() &&
+      if (((!node_body->node->device.is_cuda() && device.is_cuda()) ||
+           (device.is_cpu() && node_body->node->device == DISK_DEVICE)) &&
           node_body->node->mutex.try_lock()) {
         total_size += node_body->node->byte_size;
         node_ptr_list.push_back(node_body->node);

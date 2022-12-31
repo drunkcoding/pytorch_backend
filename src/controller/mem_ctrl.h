@@ -57,10 +57,10 @@ class MemCtrl : public muduo::noncopyable {
 
   MemCtrl()
   {
-    sys_mem_ctrl_ = std::make_shared<MemoryController>(SYS_FREE_MEMORY * 0.6);
+    sys_mem_ctrl_ = std::make_shared<MemoryController>(SYS_FREE_MEMORY * 0.9);
     for (int i = 0; i < GetDeviceCount(); ++i) {
       cuda_mem_ctrls_.emplace_back(
-          std::make_shared<MemoryController>(CUDA_FREE_MEMORY(i) * 0.6));
+          std::make_shared<MemoryController>(CUDA_FREE_MEMORY(i) * 0.7));
     }
   }
   virtual ~MemCtrl() = default;

@@ -18,7 +18,7 @@ class CounterFlowController : public FlowControllerFactory {
   }
   virtual ~CounterFlowController() = default;
 
-  FilterResult GetStandbyChildByCount(const NodePtr& node, const std::size_t size_limit);
+  FilterResult GetStandbyChildByCount(const NodePtr& node, const std::size_t size_limit, const Device& device);
 
  private:
   std::unordered_map<NodeID, Device> node_location_;

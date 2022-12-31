@@ -18,9 +18,16 @@ FetchThreadFunc(
        " gpu free memory " + std::to_string(CUDA_MEM_CTL(0)->GetFreeMemory()) +
        " bytes")
           .c_str());
-  // std::unique_lock<std::mutex> lock(node->mutex);
 
   if (node->device == device) {
+    if (device.is_cuda()) {
+      node->memory_type = MemoryType::kReady;
+      node->last_access_time = MCIROSECONDS_SINCE_EPOCH;
+    }
+      
+    if (device.is_cpu() || device == DISK_DEVICE)
+      node->memory_type = MemoryType::kStandBy;
+
     if (!immediate)
       node->mutex.unlock();
     auto end_time = MCIROSECONDS_SINCE_EPOCH;
@@ -33,8 +40,13 @@ FetchThreadFunc(
     return;
   }
 
+  // if (device.is_cuda())
+  //   node->memory_type = MemoryType::kEmplacing;
+  // if (device.is_cpu() || device == DISK_DEVICE)
+  //   node->memory_type = MemoryType::kEvicting;
+
   // // work as a barrier
-  if (device.is_cuda() || device.is_cpu()) {
+  if (device.is_cuda() || (device.is_cpu() && node->device == DISK_DEVICE)) {
     int wait_cnt = 0;
     while (counter->load() > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -57,7 +69,9 @@ FetchThreadFunc(
   // node->GetModelInstanceInfo() +
   //                     " lock acuired ")
   //                        .c_str());
-
+  if (device.is_cuda()) {
+    node->last_access_time = MCIROSECONDS_SINCE_EPOCH;
+  }
   // if (device.is_cuda()) {
   //   node->last_access_time = MCIROSECONDS_SINCE_EPOCH;
   //   // LOG_TRITON_VERBOSE(
@@ -89,22 +103,22 @@ FetchThreadFunc(
   //   }
   // }
 
-  if (node->device.is_cuda()) {
+  if (node->device.is_cuda() && !device.is_cuda()) {
     counter->fetch_add(-1);
     CUDA_MEM_CTL(node->device.index())->FreeMemory(node->id, node->byte_size);
   }
-  if (node->device.is_cpu()) {
+  if (node->device.is_cpu() && !device.is_cpu()) {
     counter->fetch_add(-1);
     SYS_MEM_CTL->FreeMemory(node->id, node->byte_size);
   }
 
   node->SetDevice(device);
-  // if (immediate) {
-  //   lock.release();
-  //   node->cv.notify_all();
-  // } else {
-  //   lock.unlock();
-  // }
+
+  if (device.is_cuda())
+    node->memory_type = MemoryType::kReady;
+  if (device.is_cpu() || device == DISK_DEVICE)
+    node->memory_type = MemoryType::kStandBy;
+
   if (!immediate)
     node->mutex.unlock();
 

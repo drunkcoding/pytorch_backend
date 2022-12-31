@@ -90,9 +90,11 @@ ModelInstanceState::ProcessRequests(
        std::to_string(request_count) + " requests")
           .c_str());
 
+  c10::cuda::CUDACachingAllocator::emptyCache();
+
   // no response needed just wait
   auto start_time = MCIROSECONDS_SINCE_EPOCH;
-  LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequests: node: " +
+  LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
                       node_->GetModelInstanceInfo() + ", waiting for lock")
                          .c_str());
   node_->mutex.lock();
@@ -123,19 +125,20 @@ ModelInstanceState::ProcessRequests(
   while (!node_->device.is_cuda()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     wait_count++;
-    if (wait_count > 1000) {
+    if (wait_count % 1000 == 0) {
       LOG_TRITON_ERROR(("ModelInstanceState::ProcessRequests: node: " +
                         node_->GetModelInstanceInfo() +
                         ", wait_count: " + std::to_string(wait_count))
                            .c_str());
-      wait_count = 0;
     }
   }
   end_time = MCIROSECONDS_SINCE_EPOCH;
-  LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequests: node: " +
+  LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
                       node_->GetModelInstanceInfo() +
                       ", wait time: " + std::to_string(end_time - start_time))
                          .c_str());
+
+
   // while (true)
   // {
   //   std::unique_lock<std::mutex> lock(node_->mutex);
@@ -485,6 +488,8 @@ ModelInstanceState::ProcessRequests(
         "failed reporting batch request statistics");
   }
 
+  c10::cuda::CUDACachingAllocator::emptyCache();
+
   // node_->memory_type = MemoryType::kReady;
   // lock.unlock();
 }
@@ -506,6 +511,19 @@ ModelInstanceState::Create(
 
   return nullptr;  // success
 }
+
+// std::vector<string>
+// adv_tokenizer(string s, char del)
+// {
+//   std::vector<string> tokens;
+//   stringstream ss(s);
+//   string word;
+//   while (!ss.eof()) {
+//     getline(ss, word, del);
+//     tokens.push_back(word);
+//   }
+//   return tokens;
+// }
 
 ModelInstanceState::ModelInstanceState(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
@@ -539,6 +557,7 @@ ModelInstanceState::ModelInstanceState(
       ArtifactFilename(), device_, &model_path_, &torch_model_, &node_));
   // NOTE: Load Module temeprarily for IO verification
   // node_->SetExecMutex(&exec_mutex_);
+  node_->stream = CudaStream();
 
   size_t expected_input_cnt = 0;
   {
@@ -596,6 +615,52 @@ ModelInstanceState::ModelInstanceState(
       ->RegisterBackendEngine(node_->id, engine_);
   LOG_TRITON_VERBOSE(
       ("Release model to disk " + node_->GetModelInstanceInfo()).c_str());
+
+  // auto tokens = adv_tokenizer(Name(), '_');
+  // auto base_tokens = adv_tokenizer(tokens[0], '-');
+  // num_experts_ = std::stoi(base_tokens[0]);
+
+  // // get ../../model_path_
+  // auto model_repo_path = std::filesystem::path(model_path_).parent_path().parent_path();
+  // // get number of dirs under model_repo_path
+  // auto num_models = std::distance(std::filesystem::directory_iterator(model_repo_path), std::filesystem::directory_iterator{});
+  // num_layers_ = (num_models - 5) / (num_experts_ + 4);
+
+  // auto layer_type = tokens[1];
+  // auto layer_name = tokens[2];
+
+  // node_id_ = 0;
+  // stage_id = 0;
+
+  // if (layer_type == "lm") {
+  //   // lm_head layer
+  //   stage_id = num_layers_ * 5 + 4;
+  //   return;
+  // }
+
+  // if (layer_type == "encoder") {
+  //   // encoder layer
+  //   if (layer_name == "embed") {
+  //     stage_id = 0;
+  //     return;
+  //   } else if (layer_name == "final") {
+  //     stage_id = num_layers_ * 2.5 + 1;
+  //   }
+  //   else if (layer_name == "block") {
+  //     uint64_t layer_idx = std::stoi(tokens[3]);
+  //     stage_id = 1 + layer_idx;
+  //   }
+  //   return;
+  // }
+
+  
+
+  // node_id_ = 0;
+  // stage_id = 0;
+
+  // if (layer_name == "expert") {
+
+  // }
 }
 
 void

@@ -43,11 +43,19 @@ CounterFlowController::PrefetchNode(const NodePtr& node)
 
   SizeFilterFunc size_filter = THIS_BIND_ARGS(
       CounterFlowController, GetStandbyChildByCount, node,
-      std::placeholders::_1);
+      std::placeholders::_1, std::placeholders::_2);
   // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
-  while (!CreatePrefetchThreads(node, size_filter)) {
+  bool gpu_prefetch = false;
+  bool cpu_prefetch = true;
+
+  do {
+    if (!gpu_prefetch)
+      gpu_prefetch =
+          CreatePrefetchThreads(node, size_filter, DEFAULT_CUDA_DEVICE);
+    if (!cpu_prefetch)
+      cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  } while (!gpu_prefetch || !cpu_prefetch);
 
   return prefetch_nodes;
 }
@@ -55,7 +63,7 @@ CounterFlowController::PrefetchNode(const NodePtr& node)
 
 FilterResult
 CounterFlowController::GetStandbyChildByCount(
-    const NodePtr& node, const std::size_t size_limit)
+    const NodePtr& node, const std::size_t size_limit, const Device& device)
 {
   NodeID current_node_id = node->corr_id;
 
@@ -71,9 +79,7 @@ CounterFlowController::GetStandbyChildByCount(
     // Due to MoE design, we only process layer by layer
     auto stage = pipeline_.stages[low_corr_id];
 
-    if (stage == nullptr) {
-      break;
-    }
+    BREAK_IF_NULL(stage);
 
     if (stage->is_sparse) {
       // Sparse stage, we only prefetch the first layer
@@ -87,15 +93,17 @@ CounterFlowController::GetStandbyChildByCount(
             }
             return a->visit_cnt > b->visit_cnt;
           });
-      for (int j = 0; j < 3; j++) {
+
+      std::size_t layer_size = copy_nodes.size();
+      std::size_t max_layer_fetch_size = 10;
+      for (std::size_t j = 0; j < std::min(layer_size, max_layer_fetch_size);
+           j++) {
         auto node_body = copy_nodes[j];
-        if (node_body == nullptr) {
-          break;
-        }
+        BREAK_IF_NULL(node_body);
         if (total_size + node_body->node->byte_size > size_limit) {
           return std::make_pair(total_size, node_ptr_list);
         }
-        if (!node_body->node->device.is_cuda() &&
+        if (node_body->node->device != device &&
             node_body->node->mutex.try_lock()) {
           total_size += node_body->node->byte_size;
           node_ptr_list.push_back(node_body->node);
@@ -111,10 +119,10 @@ CounterFlowController::GetStandbyChildByCount(
       if (total_size + node_body->node->byte_size > size_limit) {
         return std::make_pair(total_size, node_ptr_list);
       }
-      if (!node_body->node->device.is_cuda() &&
-          node_body->node->mutex.try_lock()) {
+      if (!node_body->node->device.is_cuda()) {
         total_size += node_body->node->byte_size;
-        node_ptr_list.push_back(node_body->node);
+        if (node_body->node->mutex.try_lock())
+          node_ptr_list.push_back(node_body->node);
       }
     }
 

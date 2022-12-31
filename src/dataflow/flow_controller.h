@@ -157,7 +157,8 @@ class FlowControllerFactory : public muduo::noncopyable {
       const Device& from, const Device& to, const std::size_t& size);
 
   // Prefetch if possible
-  bool CreatePrefetchThreads(const NodePtr& node, const SizeFilterFunc& func);
+  bool CreatePrefetchThreads(
+      const NodePtr& node, const SizeFilterFunc& func, const Device& device);
 
  protected:
   // void PutNodeTopology(
@@ -180,7 +181,7 @@ class FlowControllerFactory : public muduo::noncopyable {
   FilterResult GetTotalGPUParamSize();
   FilterResult GetRemovableNodes();
 
-  FilterResult GetLRUNodes();
+  FilterResult GetLRUNodes(const Device& device);
   // bool MemorySizeFilter(const NodePtr& node, std::size_t* size)
   // {
   //   if (node->byte_size > *size) {
@@ -192,6 +193,9 @@ class FlowControllerFactory : public muduo::noncopyable {
 
  private:
   void DispatchNodeMemory(const NodePtr& node, const Device& device);
+  void DispatchRemoveAndFetch(
+      std::int64_t remove_size, NodePtrList& remove_nodes,
+      NodePtrList& fetch_nodes, bool immediate, const Device& device);
   std::int64_t GetPrefetableSize();
 
  protected:
@@ -203,12 +207,18 @@ class FlowControllerFactory : public muduo::noncopyable {
   // std::unordered_map<NodeID, std::size_t> visit_time_;
   // MemoryManagerPtr cpu_memory_manager_;
   // MemoryManagerPtr gpu_memory_manager_;
+  std::unordered_map<HashID, std::uint64_t> last_active_stage_;
   Pipeline pipeline_;
+
+  // some nodes are only ejected to CPU, but not to DISK
+  std::unordered_map<NodeID, Device> node_location_;
+  std::int64_t free_cpu_memory_ = GetTotalSystemMemory() * 0.9;
 };
 
 class DeepSpeedFlowController;
 class CounterFlowController;
 class PrefetchFlowController;
+class NonFetchFlowController;
 
 // #define FLOW_CONTROLLER GET_INSTANCE(DeepSpeedFlowController)
 // #define FLOW_CONTROLLER GET_INSTANCE(CounterFlowController)
@@ -227,6 +237,13 @@ class PrefetchFlowController;
 #endif
 
 
+#ifdef ENABLE_NONFETCH_FLOW_CONTROLLER
+#define FLOW_CONTROLLER GET_INSTANCE(NonFetchFlowController)
+#endif
+
+#define CONTINUE_IF_NULL(node) if (node == nullptr) continue;
+#define BREAK_IF_NULL(node) if (node == nullptr) break;
+
 #define BREAK_IF(node)                               \
   do {                                               \
     total_size += node->byte_size;                   \
@@ -239,12 +256,11 @@ class PrefetchFlowController;
   } while (0)
 
 
-#define RELEASE_LOCKS(nodes)     \
-  do {                           \
-    while (!nodes.empty()) {     \
+#define RELEASE_LOCKS(nodes)    \
+  do {                          \
+    while (!nodes.empty()) {    \
       auto node = nodes.back(); \
       nodes.pop_back();         \
-      node->mutex.unlock();      \
-    }                            \
+      node->mutex.unlock();     \
+    }                           \
   } while (0)
-

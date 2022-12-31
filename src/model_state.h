@@ -63,7 +63,7 @@ class ModelState : public BackendModel {
   bool enable_optimized_execution_;
 
   // Flag to indicate whether inference mode is enabled. Defaults to false.
-  bool enable_inference_mode_;
+  bool enable_inference_mode_ = true;
 
   // Flag to indicate whether cache cleaning after each run is enabled.
   // Defaults to false.

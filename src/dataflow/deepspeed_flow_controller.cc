@@ -61,16 +61,26 @@ DeepSpeedFlowController::PrefetchNode(const NodePtr& node)
       2. kick off fetch for next few parameters we will need later (prefetch)
       3. block on parameters in immediately required sub module
   */
- LOG_TRITON_VERBOSE(("DeepSpeedFlowController::PrefetchNode " + node->GetModelInstanceInfo()).c_str());
+  LOG_TRITON_VERBOSE(
+      ("DeepSpeedFlowController::PrefetchNode " + node->GetModelInstanceInfo())
+          .c_str());
   NodeMoveVec prefetch_nodes;
   SizeFilterFunc size_filter = THIS_BIND_ARGS(
       DeepSpeedFlowController, GetStandbyChildBySizeLimit, node,
-      std::placeholders::_1);
+      std::placeholders::_1, std::placeholders::_2);
   // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
 
-  while (!CreatePrefetchThreads(node, size_filter)) {
+  bool gpu_prefetch = false;
+  bool cpu_prefetch = true;
+
+  do {
+    if (!gpu_prefetch)
+      gpu_prefetch =
+          CreatePrefetchThreads(node, size_filter, DEFAULT_CUDA_DEVICE);
+    if (!cpu_prefetch)
+      cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  } while (!gpu_prefetch || !cpu_prefetch);
 
   return prefetch_nodes;
   // MAX_REUSE_DISTANCE is not implemented yet
@@ -78,7 +88,7 @@ DeepSpeedFlowController::PrefetchNode(const NodePtr& node)
 
 FilterResult
 DeepSpeedFlowController::GetStandbyChildBySizeLimit(
-    const NodePtr& node, const std::int64_t size_limit)
+    const NodePtr& node, const std::int64_t size_limit, const Device& device)
 {
   // std::int64_t size = node->byte_size;
   // NodePtrList node_ptr_list;
@@ -93,22 +103,22 @@ DeepSpeedFlowController::GetStandbyChildBySizeLimit(
   std::int64_t size = 0;
   NodePtrList node_ptr_list;
 
+  // return std::make_pair(size, node_ptr_list);
+
   for (std::uint64_t stage_idx = (node->corr_id & 0x00000000FFFFFFFF) + 1;
        stage_idx < pipeline_.stages.size(); ++stage_idx) {
     auto stage = pipeline_.stages[stage_idx];
-    if (stage == nullptr) {
-      break;
-    }
+    BREAK_IF_NULL(stage)
     for (auto& node_body : stage->nodes) {
-      if (node_body == nullptr) {
-        continue;
-      }
+      CONTINUE_IF_NULL(node_body)
       if (size + node_body->node->byte_size > size_limit) {
         return std::make_pair(size, node_ptr_list);
       }
-      if (!node_body->node->device.is_cuda() && node_body->node->mutex.try_lock()) {
+
+      if (node_body->node->device != device) {
         size += node_body->node->byte_size;
-        node_ptr_list.push_back(node_body->node);
+        if (node_body->node->mutex.try_lock())
+          node_ptr_list.push_back(node_body->node);
       }
     }
   }

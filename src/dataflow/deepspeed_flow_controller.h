@@ -25,7 +25,7 @@ class DeepSpeedFlowController
   virtual ~DeepSpeedFlowController() = default;
 
   FilterResult GetStandbyChildBySizeLimit(
-      const NodePtr& node, const std::int64_t size_limit);
+      const NodePtr& node, const std::int64_t size_limit, const Device& device);
 
  private:
   std::unordered_map<NodeID, Device> node_location_;

@@ -22,7 +22,7 @@ class PrefetchFlowController : public FlowControllerFactory {
   virtual ~PrefetchFlowController() = default;
 
   FilterResult GetStandbyChildByFreq(
-      const NodePtr& node, const std::size_t size_limit);
+      const NodePtr& node, const std::size_t size_limit, const Device& device);
   //   void RecursivelyUpdateProbability(
   //       const NodeFlowPtr& node_flow, ModelProbabilityVec& prob_map);
 

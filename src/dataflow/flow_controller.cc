@@ -135,6 +135,12 @@ FlowControllerFactory::PutNodeToPipeline(
   auto node_idx = (high_corr_id > 0) ? (high_corr_id - 1) : 0;
 
   if (visited_.find(correlation_id) == visited_.end()) {
+    if (free_cpu_memory_ > node->byte_size) {
+      free_cpu_memory_ -= node->byte_size;
+      node_location_.insert({node->id, CPU_DEVICE});
+    } else
+      node_location_.insert({node->id, DISK_DEVICE});
+
     visited_.insert(correlation_id);
     auto node_body = std::make_shared<NodeBody>(node);
 
@@ -260,11 +266,12 @@ FlowControllerFactory::PutNodeToPipeline(
       }
       stage->activate_request.erase(request_id);
     }
+    last_active_stage_.erase(request_id);
   }
 
   // for all nodes and stage and children in the pipeline, reduce count of nodes
-  // that are not visited for 1 minute
-  std::size_t microseconds = 60000000;
+  // that are not visited for 1 hour
+  std::size_t microseconds = 60000000ULL * 60;
   for (auto& stage : pipeline_.stages) {
     if (stage == nullptr) {
       continue;
@@ -303,6 +310,20 @@ FlowControllerFactory::PutNodeToPipeline(
       visit = stage->visit_time.begin();
     }
   }
+
+  auto it = last_active_stage_.find(request_id);
+  if (it == last_active_stage_.end()) {
+    last_active_stage_.insert({request_id, low_corr_id});
+  } else {
+    it->second = low_corr_id;
+  }
+
+  std::size_t byte_size = 0;
+  for (auto node_body : pipeline_.stages[low_corr_id]->nodes) {
+    CONTINUE_IF_NULL(node_body);
+    byte_size += node_body->node->byte_size;
+  }
+  pipeline_.stages[low_corr_id]->byte_size = byte_size;
 }
 
 // NodeTopologyPtr
@@ -359,94 +380,162 @@ FlowControllerFactory::GetPrefetableSize()
   return prefetch_size;
 }
 
+void
+FlowControllerFactory::DispatchRemoveAndFetch(
+    std::int64_t remove_size, NodePtrList& remove_nodes,
+    NodePtrList& fetch_nodes, bool immediate, const Device& device)
+{
+  std::int64_t fetch_size =
+      ((device.is_cuda()) ? CUDA_MEM_CTL(device.index())->GetFreeMemory()
+                          : SYS_MEM_CTL->GetFreeMemory()) +
+      remove_size;
+  CounterPtr remove_cnt = std::make_shared<std::atomic<int>>(0);
+  while (!remove_nodes.empty()) {
+    auto node = remove_nodes.front();
+    if (remove_size < 0) {
+      break;
+    }
+    remove_size -= node->byte_size;
+    remove_cnt->fetch_add(1);
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreadsGPU: remove node = " +
+         node->GetModelInstanceInfo() +
+         " remain memory to remove = " + std::to_string(remove_size))
+            .c_str());
+
+
+#ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+    auto it = node_location_.find(node->id);
+    std::thread prefetch_thread(
+        FetchThreadFunc, node, it->second, false, remove_cnt);
+#else
+    std::thread prefetch_thread(
+        FetchThreadFunc, node, DISK_DEVICE, false, remove_cnt);
+#endif  // ENABLE_PREFETCH_FLOW_CONTROLLER
+
+
+    prefetch_thread.detach();
+    // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
+    remove_nodes.erase(remove_nodes.begin());
+  }
+
+
+  while (!fetch_nodes.empty()) {
+    auto node = fetch_nodes.front();
+    if (fetch_size - node->byte_size < 0) {
+      break;
+    }
+    fetch_size -= node->byte_size;
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreadsGPU: fetch node = " +
+         node->GetModelInstanceInfo())
+            .c_str());
+    std::thread prefetch_thread(
+        FetchThreadFunc, node, device, immediate, remove_cnt);
+    prefetch_thread.detach();
+    // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
+    fetch_nodes.erase(fetch_nodes.begin());
+
+    auto mem_ctl =
+        (device.is_cuda()) ? CUDA_MEM_CTL(device.index()) : SYS_MEM_CTL;
+    mem_ctl->AllocateMemory(node->id, node->byte_size);
+  }
+}
+
 bool
 FlowControllerFactory::CreatePrefetchThreads(
-    const NodePtr& node, const SizeFilterFunc& func)
+    const NodePtr& node, const SizeFilterFunc& func, const Device& device)
 {
   LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
                       std::to_string(node->id))
                          .c_str());
-  auto [removable_memory, removable_node_list] = GetLRUNodes();
-  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
-                      std::to_string(node->id) + " removable_memory = " +
-                      std::to_string(removable_memory) +
-                      " nodes = " + std::to_string(removable_node_list.size()))
-                         .c_str());
-  auto [prefetch_memory, prefetch_node_list] = func(PREFETCH_BUCKET_SIZE);
-  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: id " +
-                      std::to_string(node->id) +
-                      " prefetch_memory = " + std::to_string(prefetch_memory) +
-                      " nodes = " + std::to_string(prefetch_node_list.size()) +
-                      " free memory = " +
-                      std::to_string(DEFAULT_CUDA_MEM_CTL->GetFreeMemory()))
-                         .c_str());
-  // prefetch_memory = PREFETCH_BUCKET_SIZE;
-  if (!node->device.is_cuda())
-    prefetch_memory += node->byte_size;
-  // prefetch_node_list.push_back(node);
 
   std::int64_t remove_size = -1;
-  CounterPtr remove_cnt = std::make_shared<std::atomic<int>>(0);
+  std::int64_t free_memory = (device.is_cuda())
+                                 ? CUDA_MEM_CTL(device.index())->GetFreeMemory()
+                                 : SYS_MEM_CTL->GetFreeMemory();
 
-  // std::atimic_int remove_cnt = 0;
-  if (prefetch_memory > CUDA_MEM_CTL(0)->GetFreeMemory()) {
-    remove_size =
-        prefetch_memory - CUDA_MEM_CTL(0)->GetFreeMemory() + node->byte_size;
-  }
+  auto [removable_memory, removable_node_list] = GetLRUNodes(device);
+  LOG_TRITON_VERBOSE(
+      ("FlowControllerFactory::CreatePrefetchThreads: device " + device.str() +
+       " removable_memory = " + std::to_string(removable_memory) +
+       " nodes = " + std::to_string(removable_node_list.size()))
+          .c_str());
+  auto [prefetch_memory, prefetch_node_list] =
+      func(PREFETCH_BUCKET_SIZE * ((device.is_cuda()) ? 1 : 50), device);
+  LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: device " +
+                      device.str() +
+                      " prefetch_memory = " + std::to_string(prefetch_memory) +
+                      " nodes = " + std::to_string(prefetch_node_list.size()) +
+                      " free memory = " + std::to_string(free_memory))
+                         .c_str());
 
-  if (remove_size > removable_memory) {
-    LOG_TRITON_VERBOSE(
-        ("FlowControllerFactory::CreatePrefetchThreads: remove_size = " +
-         std::to_string(remove_size) +
-         " > removable_memory = " + std::to_string(removable_memory))
-            .c_str());
-    RELEASE_LOCKS(removable_node_list);
-    RELEASE_LOCKS(prefetch_node_list);
-    return false;
-  }
-
-  while (!removable_node_list.empty()) {
-    auto prefetch_node = removable_node_list.front();
-    if (remove_size < 0) {
-      break;
+  if (!node->device.is_cuda() && device.is_cuda()) {
+    prefetch_memory += node->byte_size;
+    if (removable_memory + free_memory < node->byte_size) {
+      LOG_TRITON_ERROR(
+          ("FlowControllerFactory::CreatePrefetchThreads: remove_size = " +
+           std::to_string(remove_size) +
+           " > removable_memory = " + std::to_string(removable_memory) +
+           ", node size = " + std::to_string(node->byte_size))
+              .c_str());
+      RELEASE_LOCKS(removable_node_list);
+      RELEASE_LOCKS(prefetch_node_list);
+      return false;
     }
-    remove_size -= prefetch_node->byte_size;
-    remove_cnt->fetch_add(1);
-    LOG_TRITON_VERBOSE(
-        ("FlowControllerFactory::CreatePrefetchThreads: remove node = " +
-         prefetch_node->GetModelInstanceInfo() +
-         " remain memory to remove = " + std::to_string(remove_size))
-            .c_str());
-    std::thread prefetch_thread(
-        FetchThreadFunc, prefetch_node, DISK_DEVICE, false, remove_cnt);
-    prefetch_thread.detach();
-    // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
-    removable_node_list.erase(removable_node_list.begin());
+
+    // First remove what is necessary for the immedient prefetch
+    if (node->byte_size > free_memory) {
+      remove_size = node->byte_size - free_memory;
+    }
+
+    if (remove_size > removable_memory) {
+      LOG_TRITON_ERROR(
+          ("FlowControllerFactory::CreatePrefetchThreads: remove_size = " +
+           std::to_string(remove_size) +
+           " > removable_memory = " + std::to_string(removable_memory) +
+           " free memory = " + std::to_string(free_memory))
+              .c_str());
+      RELEASE_LOCKS(removable_node_list);
+      RELEASE_LOCKS(prefetch_node_list);
+      return false;
+    }
+
+    NodePtrList immediant_nodes;
+    immediant_nodes.push_back(node);
+    DispatchRemoveAndFetch(
+        remove_size, removable_node_list, immediant_nodes, true, device);
+    remove_size = -1;
   }
+
+
+  if (prefetch_memory > free_memory) {
+    remove_size = prefetch_memory - free_memory;
+  }
+
+  // if (remove_size > removable_memory) {
+  //   LOG_TRITON_VERBOSE(
+  //       ("FlowControllerFactory::CreatePrefetchThreadsGPU: remove_size = " +
+  //        std::to_string(remove_size) +
+  //        " > removable_memory = " + std::to_string(removable_memory))
+  //           .c_str());
+  //   RELEASE_LOCKS(removable_node_list);
+  //   RELEASE_LOCKS(prefetch_node_list);
+  //   return false;
+  // }
+
+  // DispatchRemoveAndFetch(
+  //     std::min(removable_memory, remove_size * 128), removable_node_list,
+  //     prefetch_node_list, false, device);
+  if (device.is_cpu())
+    removable_memory = std::min(removable_memory, remove_size);
+  else
+    removable_memory = std::min(removable_memory, remove_size * 256);
+  DispatchRemoveAndFetch(
+      removable_memory, removable_node_list, prefetch_node_list, false, device);
 
   RELEASE_LOCKS(removable_node_list);
-
-  // FetchThreadFunc(prefetch_node_list.back(), DEFAULT_CUDA_DEVICE, true,
-  // remove_cnt);
-  // prefetch_node_list.pop_back();
-  std::thread prefetch_thread(
-      FetchThreadFunc, node, DEFAULT_CUDA_DEVICE, true, std::make_shared<std::atomic<int>>(0));
-  prefetch_thread.detach();
-  CUDA_MEM_CTL(0)->AllocateMemory(node->id, node->byte_size);
-
-  for (auto& prefetch_node : prefetch_node_list) {
-    LOG_TRITON_VERBOSE(
-        ("FlowControllerFactory::CreatePrefetchThreads: prefetch node = " +
-         prefetch_node->GetModelInstanceInfo())
-            .c_str());
-    std::thread prefetch_thread(
-        FetchThreadFunc, prefetch_node, DEFAULT_CUDA_DEVICE, false, remove_cnt);
-    prefetch_thread.detach();
-
-    // Must allocate memory before prefetching avoid later model run into OOM
-    CUDA_MEM_CTL(0)->AllocateMemory(
-        prefetch_node->id, prefetch_node->byte_size);
-  }
+  RELEASE_LOCKS(prefetch_node_list);
 
   return true;
 }
@@ -484,7 +573,8 @@ FlowControllerFactory::UpdateInitPrefetchNodes(
     return;
   }
 
-  auto [prefetch_memory, prefetch_node_list] = func(prefetch_size);
+  auto [prefetch_memory, prefetch_node_list] =
+      func(prefetch_size, DEFAULT_CUDA_DEVICE);
 
   for (auto& prefetch_node : prefetch_node_list) {
     prefetch_node->memory_type = MemoryType::kEmplacing;
@@ -658,22 +748,6 @@ FlowControllerFactory::DispatchNodeMemory(
   }
 }
 
-
-// FilterResult
-// FlowControllerFactory::GetTotalLiveParamSize()
-// {
-//   std::size_t size = 0;
-//   NodeFilterFunc filter = [&size](const NodePtr& node) {
-//     if (node->memory_type == MemoryType::kLocked) {
-//       size += node->byte_size;
-//       return true;
-//     }
-//     return false;
-//   };
-//   auto node_ptr_list = GetNodesByFilter(filter, root_->GetNodeID());
-//   return std::make_pair(size, node_ptr_list);
-// }
-
 FilterResult
 FlowControllerFactory::GetTotalLiveParamSize()
 {
@@ -764,24 +838,25 @@ FlowControllerFactory::GetTotalGPUParamSize()
 
 
 FilterResult
-FlowControllerFactory::GetLRUNodes()
+FlowControllerFactory::GetLRUNodes(const Device& device)
 {
   NodePtrList node_ptr_list;
   std::int64_t size = 0;
   for (auto& stage : pipeline_.stages) {
-    if (stage == nullptr) {
-      continue;
-    }
+    BREAK_IF_NULL(stage)
     for (auto& node_body : stage->nodes) {
-      if (node_body == nullptr) {
-        continue;
-      }
+      CONTINUE_IF_NULL(node_body)
       auto node = node_body->node;
       if (node->mutex.try_lock()) {
-        // if (pthread_mutex_trylock(node->mutex.getPthreadMutex()) == 0) {
-        if (node->device.is_cuda()) {
+        bool remove = true;
+        for (auto& active_stage : last_active_stage_) {
+          remove &=
+              (node->corr_id & 0x00000000FFFFFFFF) >
+                  (active_stage.second + 32) ||
+              (node->corr_id & 0x00000000FFFFFFFF) < (active_stage.second);
+        }
+        if (node->device == device && remove) {
           size += node->byte_size;
-          // node->mutex.unlock();
           node_ptr_list.push_back(node);
         } else
           node->mutex.unlock();
@@ -793,6 +868,7 @@ FlowControllerFactory::GetLRUNodes()
       [](const NodePtr& a, const NodePtr& b) {
         return a->last_access_time < b->last_access_time;
       });
+
   return std::make_pair(size, node_ptr_list);
 }
 
@@ -832,7 +908,8 @@ FlowControllerFactory::GetRemovableNodes()
           return a->last_access_time < b->last_access_time;
         });
     // LOG_TRITON_VERBOSE(
-    //     ("First node: " + node_ptr_list[0]->GetModelInstanceInfo()).c_str());
+    //     ("First node: " +
+    //     node_ptr_list[0]->GetModelInstanceInfo()).c_str());
   }
 
   return std::make_pair(size, node_ptr_list);

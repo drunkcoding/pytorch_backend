@@ -96,15 +96,8 @@ ModelState::LoadModel(
   torch::InferenceMode infer_guard(EnabledInferenceMode());
 
   // Create a new torch model as DAG node
-  auto memory_start = GetFreeSystemMemory();
   *node = std::make_shared<Node>(*model_path);
-  auto memory_end = GetFreeSystemMemory();
-  auto memory_diff = memory_end - memory_start;
-  LOG_TRITON_VERBOSE((std::string("Memory used to load model: ") +
-                      std::to_string(memory_diff / MB) +
-                      std::string("MB. File Size: ") +
-                      std::to_string((*node)->byte_size / MB) + "MB")
-                         .c_str());
+  (*node)->default_device = device;
   // GET_INSTANCE(DAGRegistry)->AddNode((*node)->id, *node);
   // // Allocate Memory on Management Memory Pool
   // auto request = std::make_shared<MemoryManageRequest>(
@@ -175,7 +168,7 @@ ModelState::ParseParameters()
         TRITONSERVER_ErrorDelete(err);
       }
     }
-
+    enable_cache_cleaning_ = true;
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO,
         (std::string("Cache Cleaning is ") +
@@ -193,6 +186,7 @@ ModelState::ParseParameters()
         TRITONSERVER_ErrorDelete(err);
       }
     }
+    enable_inference_mode_ = true;
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO,
         (std::string("Inference Mode is ") +

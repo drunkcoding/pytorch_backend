@@ -129,10 +129,13 @@ class ModelInstanceState
   cudaEvent_t compute_infer_start_event_;
   cudaEvent_t compute_output_start_event_;
 
+  uint64_t num_experts_;
+  uint64_t num_layers_;
+  uint64_t stage_id_;
+  uint64_t node_id_;
 
 //   std::mutex mutex_;
 //   std::condition_variable cv_;
 };
-
 
 }}}  // namespace triton::backend::pytorch

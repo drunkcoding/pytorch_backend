@@ -5,6 +5,7 @@
 #include "dataflow/counter_flow_controller.h"
 #include "dataflow/deepspeed_flow_controller.h"
 #include "dataflow/prefetch_flow_controller.h"
+#include "dataflow/nonfetch_flow_controller.h"
 
 LibtorchOpManager::LibtorchOpManager(muduo::net::EventLoop* loop) : OpBase(loop)
 {
