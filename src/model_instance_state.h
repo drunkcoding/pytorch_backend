@@ -2,8 +2,8 @@
 
 #include <torch/script.h>
 
-#include "utils/topology.h"
 #include "engine/backend_engine.h"
+#include "utils/topology.h"
 // #include "eventloop_thread.h"
 #include "model_state.h"
 #include "triton/backend/backend_common.h"
@@ -47,10 +47,7 @@ class ModelInstanceState
   // Execute...
   void ProcessRequests(
       TRITONBACKEND_Request** requests, const uint32_t request_count);
-//   void ProcessRequestsInLoop(
-//       TRITONBACKEND_Request** requests, const uint32_t request_count);
-
-//   void ProcessTritonRequest();
+  //   void ProcessTritonRequest();
 
   // Clear CUDA cache
   void ClearCache();
@@ -92,8 +89,8 @@ class ModelInstanceState
       NamingConvention* naming_convention,
       const std::vector<std::string>& allowed_io);
 
-//   void TryAllocateNodeOnGPU();
-//   void TryReleaseNodeOnGPU();
+  //   void TryAllocateNodeOnGPU();
+  //   void TryReleaseNodeOnGPU();
 
   ModelState* model_state_;
 
@@ -103,8 +100,8 @@ class ModelInstanceState
   std::shared_ptr<torch::jit::script::Module> torch_model_;
   //   torch::jit::script::Module* torch_model_;
   NodePtr node_;
-//   std::mutex exec_mutex_;
-//   std::condition_variable exec_cv_;
+  //   std::mutex exec_mutex_;
+  //   std::condition_variable exec_cv_;
   torch::Device device_;
 
   // muduo::net::EventLoop base programming
@@ -134,8 +131,10 @@ class ModelInstanceState
   uint64_t stage_id_;
   uint64_t node_id_;
 
-//   std::mutex mutex_;
-//   std::condition_variable cv_;
+  //   std::mutex mutex_;
+  //   std::condition_variable cv_;
 };
+
+static std::atomic<int> g_stream_count{0};
 
 }}}  // namespace triton::backend::pytorch

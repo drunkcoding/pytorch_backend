@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime_api.h>
 
+#include <future>
 #include <memory>
 
 #include "log_utils.h"
@@ -21,108 +22,56 @@
  */
 
 inline void
-RemoveModuleFromCache(torch::jit::script::Module** model)
+RemoveModuleFromCache(torch::jit::script::Module* model)
 {
-  for (auto it = (*model)->parameters().begin();
-       it != (*model)->parameters().end(); ++it) {
-    (*it).unsafeReleaseIntrusivePtr().reset();
-  }
-
-
-  for (auto it = (*model)->buffers().begin(); it != (*model)->buffers().end();
+  for (auto it = model->parameters().begin(); it != model->parameters().end();
        ++it) {
     (*it).unsafeReleaseIntrusivePtr().reset();
   }
 
-  delete *model;
-  *model = nullptr;
+
+  for (auto it = model->buffers().begin(); it != model->buffers().end(); ++it) {
+    (*it).unsafeReleaseIntrusivePtr().reset();
+  }
 }
 
 struct Node {
-  torch::jit::script::Module* model;  // always use raw pointer, since we need
-                                      // to manage the memory by ourselves
+  ScriptModule model;      // always use raw pointer, since we need
+                           // to manage the memory by ourselves
   MemoryType memory_type;  // indicating whether the node is executing or
                            // controlled by flow controller
   std::size_t id;
   std::size_t corr_id;
   std::int64_t byte_size;
   std::size_t last_access_time;
+  std::size_t
+      last_prefetch_time;  // the last time when the node is prefetched to GPU
   Device device;
   Device default_device;
+  Device default_host = DISK_DEVICE;
   cudaStream_t stream;
 
   // for fetch thread synchronization
   // muduo::MutexLock mutex;
   std::mutex mutex;
+  ScriptModule cpu_model;
 
  private:
   std::string model_path_;
+  // bool waiting = false;
+  // std::future<void> mem_future;
+  bool is_loaded = false;
+
+  // void Load(const Device device)
+  // {
+  //   model = new ScriptModule(torch::jit::load(model_path_, device));
+  //   waiting = false;
+  // }
 
  public:
-  explicit Node(const std::string& model_path)
-      : id(std::hash<std::string>{}(model_path)), corr_id(0), byte_size(0),
-        last_access_time(MCIROSECONDS_SINCE_EPOCH), device(CPU_DEVICE),
-        default_device(DEFAULT_CUDA_DEVICE), model_path_(model_path)
-  {
-    model = new ScriptModule(torch::jit::load(model_path));
-    std::int64_t param_size = 0;
-    for (const auto& param : model->parameters()) {
-      param_size += param.numel() * param.element_size();
-    }
-
-    // Iterate model buffers and calculate the total size of the model
-    std::int64_t buffer_size = 0;
-    for (const auto& buffer : model->buffers()) {
-      buffer_size += buffer.numel() * buffer.element_size();
-    }
-    byte_size = param_size + buffer_size;
-    // mutex.unlock();
-  }
-
-  const std::string GetModelInstanceInfo() noexcept
-  {
-    // return member value as string
-    std::stringstream ss;
-    ss << "model_path: " << model_path_ << " id: " << id
-       << " corr_id: " << std::hex << corr_id << std::dec
-       << " byte_size: " << byte_size
-       << " last_access_time: " << last_access_time << "device: " << device
-       << " memory_type: " << static_cast<int>(memory_type) << std::endl;
-    return ss.str();
-  }
-
-  void SetDevice(const Device& target_device) noexcept
-  {
-    if (device == target_device)
-      return;
-
-    // InferenceMode should be used to guard all tensors operations including
-    // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
-    torch::InferenceMode infer_guard(true);
-
-    auto move_device =
-        (target_device.is_cuda()) ? default_device : target_device;
-
-    // In our context, lazy device stays on disk
-    if (target_device == DISK_DEVICE) {
-      RemoveModuleFromCache(&model);
-      if (device.is_cuda()) {
-        c10::cuda::CUDACachingAllocator::emptyCache();
-      }
-      // if (device.is_cpu())
-      //   RemoveModuleFromCache(&model);
-    } else {
-      at::cuda::CUDAStreamGuard guard(
-          at::cuda::getStreamFromExternal(stream, default_device.index()));
-      if (model == nullptr) {
-        model = new ScriptModule(torch::jit::load(model_path_, move_device));
-      } else {
-        model->to(move_device);
-      }
-    }
-
-    device = move_device;
-  }
+  explicit Node(const std::string& model_path);
+  const std::string GetModelInstanceInfo() noexcept;
+  void SetDevice(const Device& target_device) noexcept;
 };
 typedef std::shared_ptr<Node> NodePtr;
 typedef std::vector<NodePtr> NodePtrList;
@@ -143,10 +92,18 @@ struct NodeBody {
 
   std::string str() const noexcept
   {
-    std::stringstream ss;
-    ss << "NodeBody: " << node->GetModelInstanceInfo() << "visit_cnt "
-       << visit_cnt << std::endl;
-    return ss.str();
+    // std::stringstream ss;
+    // ss << "NodeBody: " << node->GetModelInstanceInfo() << "visit_cnt "
+    //    << visit_cnt << std::endl;
+
+    // rewrite above in c style sprintf
+    char buffer[1024];
+    memset(buffer, 0, 1024);
+    sprintf(
+        buffer, "NodeBody: %s visit_cnt %ld;",
+        node->GetModelInstanceInfo().c_str(), visit_cnt);
+
+    return std::string(buffer);
   }
 };
 
@@ -162,10 +119,15 @@ struct Stage {
 
   std::string str() const noexcept
   {
-    std::stringstream ss;
-    ss << "Stage: " << nodes.size() << " nodes; visit_cnt " << visit_cnt
-       << "; is_sparse " << is_sparse << std::endl;
-    return ss.str();
+    // std::stringstream ss;
+    // ss << "Stage: " << nodes.size() << " nodes; visit_cnt " << visit_cnt
+    //    << "; is_sparse " << is_sparse << std::endl;
+
+    char buffer[1024];
+    memset(buffer, 0, 1024);
+    sprintf(buffer, "Stage[%ld,%ld,%d]", nodes.size(), visit_cnt, is_sparse);
+
+    return std::string(buffer);
   }
 };
 typedef std::shared_ptr<Stage> StagePtr;

@@ -67,9 +67,6 @@ ModelState::LoadModel(
     std::string* model_path,
     std::shared_ptr<torch::jit::script::Module>* torch_model, NodePtr* node)
 {
-  LOG_TRITON_VERBOSE((std::string("Loading model from ") + artifact_name +
-                      " for model instance '" + Name() + "'")
-                         .c_str());
   // Find the TorchScript file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
   // use the default name ("model.pt").
@@ -98,16 +95,8 @@ ModelState::LoadModel(
   // Create a new torch model as DAG node
   *node = std::make_shared<Node>(*model_path);
   (*node)->default_device = device;
-  // GET_INSTANCE(DAGRegistry)->AddNode((*node)->id, *node);
-  // // Allocate Memory on Management Memory Pool
-  // auto request = std::make_shared<MemoryManageRequest>(
-  //     node, CPU_DEVICE, ManageType::PREFETCH);
-  // GET_INSTANCE(DynamicMemoryBatcher)->Enqueue(request);
 
-  *torch_model = MODULE_PTR_NODELETE((*node)->model);
-  LOG_TRITON_VERBOSE((std::string("TorchScript model loaded from ") +
-                      *model_path + " for model instance '" + Name() + "'")
-                         .c_str());
+  *torch_model = MODULE_PTR_NODELETE(&((*node)->cpu_model));
 
   TRITONSERVER_Message* model_config_message;
   RETURN_IF_ERROR(TRITONBACKEND_ModelConfig(
@@ -213,6 +202,7 @@ ModelState::ParseParameters()
            " for model instance '" + Name() + "'")
               .c_str());
     }
+    enable_tensor_fuser_pair_ = { true, true};
 
     // If 'ENABLE_WEIGHT_SHARING' is not present in 'parameters' then no
     // update is made to 'enable_weight_sharing'.
@@ -273,32 +263,33 @@ ModelState::ParseParameters()
               .c_str());
     }
 
-    // // TODO Re-enable NvFuser once fixed
-    // // If 'ENABLE_NVFUSER' is not present in 'parameters' then no
-    // // update is made to 'enable_nvfuser'.
-    // bool enable_nvfuser = false;
-    // err = ParseParameter(params, "ENABLE_NVFUSER", &enable_nvfuser);
-    // if (err != nullptr) {
-    //   if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
-    //     return err;
-    //   } else {
-    //     LOG_MESSAGE(
-    //         TRITONSERVER_LOG_INFO, (std::string("NvFuser is not specified") +
-    //                                 " for model instance '" + Name() + "'")
-    //                                    .c_str());
-    //     TRITONSERVER_ErrorDelete(err);
-    //   }
-    // } else {
-    //   // Override, disable NvFuser till fixed
-    //   enable_nvfuser = false;
-    //   enable_nvfuser_pair_ = {true, enable_nvfuser};
-    //   LOG_MESSAGE(
-    //       TRITONSERVER_LOG_WARN, (std::string("NvFuser is ") +
-    //                               (enable_nvfuser ? "enabled" : "disabled") +
-    //                               " for model instance '" + Name() + "'")
-    //                                  .c_str());
-    // }
+    // TODO Re-enable NvFuser once fixed
+    // If 'ENABLE_NVFUSER' is not present in 'parameters' then no
+    // update is made to 'enable_nvfuser'.
+    bool enable_nvfuser = false;
+    err = ParseParameter(params, "ENABLE_NVFUSER", &enable_nvfuser);
+    if (err != nullptr) {
+      if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+        return err;
+      } else {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_INFO, (std::string("NvFuser is not specified") +
+                                    " for model instance '" + Name() + "'")
+                                       .c_str());
+        TRITONSERVER_ErrorDelete(err);
+      }
+    } else {
+      // Override, disable NvFuser till fixed
+      enable_nvfuser = false;
+      enable_nvfuser_pair_ = {true, enable_nvfuser};
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_WARN, (std::string("NvFuser is ") +
+                                  (enable_nvfuser ? "enabled" : "disabled") +
+                                  " for model instance '" + Name() + "'")
+                                     .c_str());
+    }
   }
+  enable_nvfuser_pair_ = {true, true}; 
 
   return nullptr;
 }

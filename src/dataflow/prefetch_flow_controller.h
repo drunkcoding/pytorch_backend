@@ -16,10 +16,12 @@ class PrefetchFlowController : public FlowControllerFactory {
  private:
   PrefetchFlowController()
   {
-    free_cpu_memory_ = SYS_MEM_CTL->GetFreeMemory();
-    free_gpu_memory_ = DEFAULT_CUDA_MEM_CTL->GetFreeMemory();
+    free_cpu_memory_ = DEFAULT_SYSTEM_FREE_MEMORY;
+    free_gpu_memory_ = DEFAULT_CUDA_FREE_MEMORY(0);
   }
   virtual ~PrefetchFlowController() = default;
+
+  void ReorderNodeLocations();
 
   FilterResult GetStandbyChildByFreq(
       const NodePtr& node, const std::size_t size_limit, const Device& device);
@@ -34,4 +36,5 @@ class PrefetchFlowController : public FlowControllerFactory {
   std::int64_t free_cpu_memory_;
   std::int64_t free_gpu_memory_;
   std::unordered_map<NodeID, Device> node_location_;
+  int visit_count_ = 0;
 };

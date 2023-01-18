@@ -46,10 +46,16 @@ PrefetchFlowController::RecordNode(
   if (node_location_.find(node_id) == node_location_.end()) {
     if (free_cpu_memory_ > memory_size) {
       node_location_.insert({node_id, CPU_DEVICE});
+      node->default_host = CPU_DEVICE;
       free_cpu_memory_ -= memory_size;
     } else {
       node_location_.insert({node_id, DISK_DEVICE});
+      node->default_host = DISK_DEVICE;
     }
+  }
+  visit_count_ += 1;
+  if (visit_count_ % 500 == 0) {
+    ReorderNodeLocations();
   }
 }
 
@@ -60,39 +66,28 @@ PrefetchFlowController::PrefetchNode(const NodePtr& node)
   // LOG_TRITON_VERBOSE("PrefetchFlowController::PrefetchNode");
   NodeMoveVec prefetch_nodes;
 
-  // if (node->memory_type == MemoryType::kStandBy) {
-  //   node->memory_type = MemoryType::kMoving;
-  //   prefetch_nodes.push_back(std::make_pair(node, DEFAULT_CUDA_DEVICE));
-  // }
-
-  // if (pipeline_.stages.empty()) {
-  //   UpdateMemoryManager(prefetch_nodes);
-  //   return prefetch_nodes;
-  // }
-
-  // // only prefetch from a sparse node
-  // // auto high_id = node->id >> 32;
-  // auto low_id = node->id & 0xFFFFFFFF;
-  // auto stage = pipeline_.stages[low_id];
-  // if (stage->is_sparse == false) {
-  //   return prefetch_nodes;
-  // }
-
   SizeFilterFunc size_filter = THIS_BIND_ARGS(
       PrefetchFlowController, GetStandbyChildByFreq, node,
       std::placeholders::_1, std::placeholders::_2);
   // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
-  bool gpu_prefetch = false;
+  std::vector<bool> gpu_prefetch(GetDeviceCount(), false);
   bool cpu_prefetch = false;
+  bool all_gpu_prefetch = false;
 
   do {
-    if (!gpu_prefetch)
-      gpu_prefetch =
-          CreatePrefetchThreads(node, size_filter, DEFAULT_CUDA_DEVICE);
+    for (std::size_t gpu = 0; gpu < gpu_prefetch.size(); ++gpu) {
+      if (gpu_prefetch[gpu] == false)
+        gpu_prefetch[gpu] =
+            CreatePrefetchThreads(node, size_filter, CUDA_DEVICE(gpu));
+    }
+
+    // set all_gpu_prefetch to true if all gpu_prefetch is true
+    all_gpu_prefetch = std::all_of(
+        gpu_prefetch.begin(), gpu_prefetch.end(), [](bool v) { return v; });
     if (!cpu_prefetch)
       cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  } while (!gpu_prefetch || !cpu_prefetch);
+  } while (!all_gpu_prefetch || !cpu_prefetch);
 
   return prefetch_nodes;
 }
@@ -117,7 +112,7 @@ PrefetchFlowController::GetStandbyChildByFreq(
 {
   NodeID current_node_id = node->corr_id;
   std::size_t low_corr_id = current_node_id & 0xFFFFFFFF;  // stage id
-  std::size_t high_corr_id = current_node_id >> 32;        // request id
+  std::size_t high_corr_id = current_node_id >> 32;        // node id
 
   NodePtrList node_ptr_list;
   std::size_t total_size = 0;
@@ -125,17 +120,34 @@ PrefetchFlowController::GetStandbyChildByFreq(
   if (low_corr_id >= pipeline_.stages.size()) {
     return std::make_pair(total_size, node_ptr_list);
   }
+  // LOG_TRITON_VERBOSE(
+  //     ("GetStandbyChildByFreq: low_corr_id: " + std::to_string(low_corr_id))
+  //         .c_str());
 
   if (pipeline_.stages[low_corr_id] == nullptr) {
     return std::make_pair(total_size, node_ptr_list);
   }
+  // LOG_TRITON_VERBOSE(
+  //     ("GetStandbyChildByFreq: pipeline_.stages[low_corr_id]->nodes.size(): " +
+  //      std::to_string(pipeline_.stages[low_corr_id]->nodes.size()))
+  //         .c_str());
 
-  auto current_node_body =
-      pipeline_.stages[low_corr_id]
-          ->nodes[(high_corr_id > 0) ? (high_corr_id - 1) : (0)];
+  high_corr_id = (high_corr_id > 0) ? (high_corr_id - 1) : (0);
+  if (high_corr_id >= pipeline_.stages[low_corr_id]->nodes.size()) {
+    return std::make_pair(total_size, node_ptr_list);
+  }
+
+  auto current_node_body = pipeline_.stages[low_corr_id]->nodes[high_corr_id];
+
+  if (current_node_body == nullptr) {
+    return std::make_pair(total_size, node_ptr_list);
+  }
 
   std::deque<NodeBodyPtr> visited_sparse_nodes;
   visited_sparse_nodes.push_back(current_node_body);
+
+  auto init_low_corr_id = low_corr_id;
+  low_corr_id++;
   while (low_corr_id < pipeline_.stages.size()) {
     // Due to MoE design, we only process layer by layer
     auto stage = pipeline_.stages[low_corr_id];
@@ -151,6 +163,10 @@ PrefetchFlowController::GetStandbyChildByFreq(
         auto children = node_body->children;
         auto children_cnt = node_body->children_visit_cnt;
 
+        // LOG_TRITON_VERBOSE(("GetStandbyChildByFreq: children.size(): " +
+        //                     std::to_string(children.size()))
+        //                        .c_str());
+
         // keep only not null from children and children_cnt
         children.erase(
             std::remove_if(
@@ -165,6 +181,11 @@ PrefetchFlowController::GetStandbyChildByFreq(
                 [](const std::size_t& cnt) { return cnt == 0; }),
             children_cnt.end());
 
+        // LOG_TRITON_VERBOSE(
+        //     ("GetStandbyChildByFreq: children.size() after cleanup: " +
+        //      std::to_string(children.size()))
+        //         .c_str());
+
         // sort node child visit cnt decending
         auto argsort = sort_indexes(children_cnt);
         std::size_t layer_size = argsort.size();
@@ -178,16 +199,14 @@ PrefetchFlowController::GetStandbyChildByFreq(
           if (node_body->children_visit_cnt[argsort[j]] == 0) {
             break;
           }
-          if (total_size + children[j]->node->byte_size > size_limit) {
-            return std::make_pair(total_size, node_ptr_list);
-          }
-          if (((!children[j]->node->device.is_cuda() && device.is_cuda()) ||
-               (device.is_cpu() && children[j]->node->device == DISK_DEVICE)) &&
-              children[j]->node->mutex.try_lock()) {
-            total_size += children[j]->node->byte_size;
-            node_ptr_list.push_back(children[j]->node);
-          }
-          visited_sparse_nodes.push_back(children[j]);
+          BREAK_IF_EXCEED_SIZE_LIMIT(total_size, size_limit, children[j]->node);
+          // LOG_TRITON_VERBOSE(
+          //     ("GetStandbyChildByFreq: children[argsort[j]]->node->corr_id: " +
+          //      std::to_string(children[argsort[j]]->node->corr_id))
+          //         .c_str());
+          APPEND_NODE(
+              total_size, children[argsort[j]]->node, node_ptr_list, device);
+          visited_sparse_nodes.push_back(children[argsort[j]]);
         }
       }
       if (total_size >= size_limit) {
@@ -197,23 +216,68 @@ PrefetchFlowController::GetStandbyChildByFreq(
       // Dense stage
       auto node_body = stage->nodes[0];
       BREAK_IF_NULL(node_body);
-      if (total_size + node_body->node->byte_size > size_limit) {
-        return std::make_pair(total_size, node_ptr_list);
-      }
-      if (((!node_body->node->device.is_cuda() && device.is_cuda()) ||
-           (device.is_cpu() && node_body->node->device == DISK_DEVICE)) &&
-          node_body->node->mutex.try_lock()) {
-        total_size += node_body->node->byte_size;
-        node_ptr_list.push_back(node_body->node);
-      }
+      BREAK_IF_EXCEED_SIZE_LIMIT(total_size, size_limit, node_body->node);
+      APPEND_NODE(total_size, node_body->node, node_ptr_list, device);
     }
 
     low_corr_id += 1;
+    if (low_corr_id >= init_low_corr_id + 32) {
+      break;
+    }
   }
 
-  std::size_t size = 0;
-  for (auto& node : node_ptr_list) {
-    size += node->byte_size;
+  // LOG_TRITON_VERBOSE(("GetStandbyChildByFreq: node_ptr_list.size(): " +
+  //                     std::to_string(node_ptr_list.size()))
+  //                        .c_str());
+
+  // remove node from node_ptr_list
+  node_ptr_list.erase(
+      std::remove_if(
+          node_ptr_list.begin(), node_ptr_list.end(),
+          [node](const NodePtr& prefetch_node) {
+            return prefetch_node == node;
+          }),
+      node_ptr_list.end());
+
+  // LOG_TRITON_VERBOSE(
+  //     ("GetStandbyChildByFreq: node_ptr_list.size() after cleanup: " +
+  //      std::to_string(node_ptr_list.size()))
+  //         .c_str());
+
+  return std::make_pair(total_size, node_ptr_list);
+}
+
+void
+PrefetchFlowController::ReorderNodeLocations()
+{
+  // Sort node body according to the visit count
+  std::vector<NodeBodyPtr> node_bodies;
+  for (auto& stage : pipeline_.stages) {
+    CONTINUE_IF_NULL(stage);
+    for (auto& node_body : stage->nodes) {
+      CONTINUE_IF_NULL(node_body);
+      node_bodies.push_back(node_body);
+    }
   }
-  return std::make_pair(size, node_ptr_list);
+
+  std::sort(
+      node_bodies.begin(), node_bodies.end(),
+      [](const NodeBodyPtr& a, const NodeBodyPtr& b) {
+        return a->visit_cnt > b->visit_cnt;
+      });
+
+  // Reorder node locations highest visit count first to CPU
+  auto free_cpu_mem = DEFAULT_SYSTEM_FREE_MEMORY;
+  node_location_.clear();
+  for (auto& node_body : node_bodies) {
+    auto node_id = node_body->node->id;
+    if (free_cpu_mem > node_body->node->byte_size) {
+      node_location_.insert({node_id, CPU_DEVICE});
+      free_cpu_mem -= node_body->node->byte_size;
+      node_body->node->default_host = CPU_DEVICE;
+    } else {
+      node_location_.insert({node_id, DISK_DEVICE});
+      node_body->node->default_host = DISK_DEVICE;
+    }
+  }
 }

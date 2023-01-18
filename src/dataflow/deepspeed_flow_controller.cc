@@ -61,26 +61,29 @@ DeepSpeedFlowController::PrefetchNode(const NodePtr& node)
       2. kick off fetch for next few parameters we will need later (prefetch)
       3. block on parameters in immediately required sub module
   */
-  LOG_TRITON_VERBOSE(
-      ("DeepSpeedFlowController::PrefetchNode " + node->GetModelInstanceInfo())
-          .c_str());
   NodeMoveVec prefetch_nodes;
   SizeFilterFunc size_filter = THIS_BIND_ARGS(
       DeepSpeedFlowController, GetStandbyChildBySizeLimit, node,
       std::placeholders::_1, std::placeholders::_2);
   // UpdateInitPrefetchNodes(prefetch_nodes, size_filter);
 
-  bool gpu_prefetch = false;
+  std::vector<bool> gpu_prefetch(GetDeviceCount(), false);
   bool cpu_prefetch = true;
+  bool all_gpu_prefetch = false;
 
   do {
-    if (!gpu_prefetch)
-      gpu_prefetch =
-          CreatePrefetchThreads(node, size_filter, DEFAULT_CUDA_DEVICE);
-    if (!cpu_prefetch)
-      cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
+    for (std::size_t gpu = 0; gpu < gpu_prefetch.size(); ++gpu) {
+      if (gpu_prefetch[gpu] == false)
+        gpu_prefetch[gpu] =
+            CreatePrefetchThreads(node, size_filter, CUDA_DEVICE(gpu));
+    }
+    // set all_gpu_prefetch to true if all gpu_prefetch is true
+    all_gpu_prefetch = std::all_of(
+        gpu_prefetch.begin(), gpu_prefetch.end(), [](bool v) { return v; });
+    // if (!cpu_prefetch)
+    //   cpu_prefetch = CreatePrefetchThreads(node, size_filter, CPU_DEVICE);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  } while (!gpu_prefetch || !cpu_prefetch);
+  } while (!all_gpu_prefetch || !cpu_prefetch);
 
   return prefetch_nodes;
   // MAX_REUSE_DISTANCE is not implemented yet
@@ -115,7 +118,8 @@ DeepSpeedFlowController::GetStandbyChildBySizeLimit(
         return std::make_pair(size, node_ptr_list);
       }
 
-      if (node_body->node->device != device) {
+      if (!node_body->node->device.is_cuda() &&
+          device == node_body->node->default_device) {
         size += node_body->node->byte_size;
         if (node_body->node->mutex.try_lock())
           node_ptr_list.push_back(node_body->node);

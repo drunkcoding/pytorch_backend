@@ -312,7 +312,7 @@ set(CMAKE_CXX_STANDARD 17)
 #set compiler to clang
 set(CMAKE_CXX_COMPILER "c++")
 #set cpp debug flag
-list(APPEND CXX_FLAGS "-g -gstabs -stdlib=libc++")
+list(APPEND CXX_FLAGS "-ggdb3 -stdlib=libc++")
 
 add_library(
   triton-pytorch-backend SHARED

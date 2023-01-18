@@ -114,7 +114,7 @@ GetSumOfIValueByteSize(const std::vector<torch::jit::IValue>& values)
   return size;
 }
 
-#define DEFAULT_DEVICE_ID 0
-#define DEFAULT_CUDA_FREE_MEMORY GetFreeDeviceMemory(DEFAULT_DEVICE_ID)
-#define CUDA_FREE_MEMORY(idx) GetFreeDeviceMemory(idx) * 0.8
-#define SYS_FREE_MEMORY GetFreeSystemMemory() * 0.8
+// #define DEFAULT_DEVICE_ID 0
+// #define DEFAULT_CUDA_FREE_MEMORY GetFreeDeviceMemory(DEFAULT_DEVICE_ID)
+#define CUDA_FREE_MEMORY(idx) GetFreeDeviceMemory(idx)
+#define SYS_FREE_MEMORY GetFreeSystemMemory()

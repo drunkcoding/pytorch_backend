@@ -12,3 +12,11 @@ ENUM_MACRO(
     kEvicting,   // memory is moving to SSD
     kCaching,    // memory is moving to CPU
 )
+
+ENUM_MACRO(
+    MemoryStatus,
+    kSuccess,
+    kAllocated,
+    kFreed,
+    kFailed,
+)

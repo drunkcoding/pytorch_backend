@@ -160,6 +160,8 @@ class FlowControllerFactory : public muduo::noncopyable {
   bool CreatePrefetchThreads(
       const NodePtr& node, const SizeFilterFunc& func, const Device& device);
 
+  FilterResult GetLFUNodes(const Device& device);
+
  protected:
   // void PutNodeTopology(
   //     const std::uint64_t& correlation_id, const NodePtr& node);
@@ -182,6 +184,7 @@ class FlowControllerFactory : public muduo::noncopyable {
   FilterResult GetRemovableNodes();
 
   FilterResult GetLRUNodes(const Device& device);
+
   // bool MemorySizeFilter(const NodePtr& node, std::size_t* size)
   // {
   //   if (node->byte_size > *size) {
@@ -194,8 +197,9 @@ class FlowControllerFactory : public muduo::noncopyable {
  private:
   void DispatchNodeMemory(const NodePtr& node, const Device& device);
   void DispatchRemoveAndFetch(
-      std::int64_t remove_size, NodePtrList& remove_nodes,
-      NodePtrList& fetch_nodes, bool immediate, const Device& device);
+      const NodePtr& cur_node, std::int64_t remove_size,
+      NodePtrList& remove_nodes, NodePtrList& fetch_nodes,
+      const Device& device);
   std::int64_t GetPrefetableSize();
 
  protected:
@@ -213,6 +217,7 @@ class FlowControllerFactory : public muduo::noncopyable {
   // some nodes are only ejected to CPU, but not to DISK
   std::unordered_map<NodeID, Device> node_location_;
   std::int64_t free_cpu_memory_ = GetTotalSystemMemory() * 0.9;
+  std::mutex mutex_;
 };
 
 class DeepSpeedFlowController;
@@ -241,20 +246,27 @@ class NonFetchFlowController;
 #define FLOW_CONTROLLER GET_INSTANCE(NonFetchFlowController)
 #endif
 
-#define CONTINUE_IF_NULL(node) if (node == nullptr) continue;
-#define BREAK_IF_NULL(node) if (node == nullptr) break;
-
-#define BREAK_IF(node)                               \
-  do {                                               \
-    total_size += node->byte_size;                   \
-    if (total_size >= size_limit) {                  \
-      break;                                         \
-    }                                                \
-    if (node->memory_type == MemoryType::kStandBy) { \
-      prefetch_node_list.push_back(node);            \
-    }                                                \
+#define CONTINUE_IF_NULL(node) \
+  if (node == nullptr)         \
+    continue;
+#define BREAK_IF_NULL(node) \
+  if (node == nullptr)      \
+    break;
+#define BREAK_IF_EXCEED_SIZE_LIMIT(size, limit, node) \
+  if (size + node->byte_size > limit)                 \
+    break;
+#define APPEND_NODE(size, node, node_list, device)                      \
+  do {                                                                  \
+    if (((!node->device.is_cuda() && device == node->default_device) || \
+         (device.is_cpu() && node->device == DISK_DEVICE))) {           \
+      size += node->byte_size;                                          \
+      if (node->mutex.try_lock())                                       \
+        node_list.push_back(node);                                      \
+    }                                                                   \
+    if (node->device == device) {                                       \
+      size += node->byte_size;                                          \
+    }                                                                   \
   } while (0)
-
 
 #define RELEASE_LOCKS(nodes)    \
   do {                          \

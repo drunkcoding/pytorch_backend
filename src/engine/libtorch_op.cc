@@ -68,7 +68,7 @@ LibtorchOpManager::ExecuteModel(const LibtorchRequestPtr& request)
   assert(
       exec_request->node->memory_type == MemoryType::kReady ||
       exec_request->node->memory_type == MemoryType::kEmplacing);
-  exec_request->node->memory_type = MemoryType::kLocked;
+  // exec_request->node->memory_type = MemoryType::kLocked;
   FLOW_CONTROLLER->RecordNode(exec_request->input_id, exec_request->node);
 
   // eviction_candidates is node where device not to CUDA
@@ -195,7 +195,7 @@ LibtorchOpManager::EntryWaitModelExecute(const BackendResponsePtr& response)
   if (loop_->isInLoopThread()) {
     auto execute_response =
         std::static_pointer_cast<BackendExecuteResponse>(response);
-    execute_response->node->memory_type = MemoryType::kReady;
+    // execute_response->node->memory_type = MemoryType::kReady;
   } else {
     loop_->queueInLoop(
         SELF_BIND_ARGS(LibtorchOpManager, EntryWaitModelExecute, response));
@@ -211,7 +211,7 @@ LibtorchOpManager::EntryWaitModelUnload(
     (*wait_count)--;
     auto unload_response =
         std::static_pointer_cast<BackendUnloadResponse>(response);
-    unload_response->node->memory_type = MemoryType::kStandBy;
+    // unload_response->node->memory_type = MemoryType::kStandBy;
     FLOW_CONTROLLER->UpdateMemoryManager(
         unload_response->from, unload_response->to,
         unload_response->node->byte_size);

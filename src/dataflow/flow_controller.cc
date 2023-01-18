@@ -8,6 +8,8 @@
 
 #include <queue>
 
+#include "controller/fetch_pool.h"
+#include "controller/stream_ctrl.h"
 #include "forward_def.h"
 #include "triton/common/logging.h"
 #include "utils/functor.h"
@@ -122,16 +124,16 @@ FlowControllerFactory::PutNodeToPipeline(
   //                << " correlation_id " << std::hex << correlation_id
   //                << " high_corr_id " << high_corr_id << " low_corr_id "
   //                << low_corr_id << " is_last_node " << is_last_node;
-  LOG_TRITON_VERBOSE(
-      (std::string("PutNodeToPipeline: request_id ") +
-       std::to_string(request_id) + std::string(" correlation_id ") +
-       std::to_string(correlation_id) + std::string(" high_corr_id ") +
-       std::to_string(high_corr_id) + std::string(" low_corr_id ") +
-       std::to_string(low_corr_id) + std::string(" is_last_node ") +
-       std::to_string(is_last_node))
-          .c_str());
+  // LOG_TRITON_VERBOSE(
+  //     (std::string("PutNodeToPipeline: request_id ") +
+  //      std::to_string(request_id) + std::string(" correlation_id ") +
+  //      std::to_string(correlation_id) + std::string(" high_corr_id ") +
+  //      std::to_string(high_corr_id) + std::string(" low_corr_id ") +
+  //      std::to_string(low_corr_id) + std::string(" is_last_node ") +
+  //      std::to_string(is_last_node))
+  //         .c_str());
 
-  node->corr_id = correlation_id;
+  // node->corr_id = correlation_id;
   auto node_idx = (high_corr_id > 0) ? (high_corr_id - 1) : 0;
 
   if (visited_.find(correlation_id) == visited_.end()) {
@@ -382,8 +384,8 @@ FlowControllerFactory::GetPrefetableSize()
 
 void
 FlowControllerFactory::DispatchRemoveAndFetch(
-    std::int64_t remove_size, NodePtrList& remove_nodes,
-    NodePtrList& fetch_nodes, bool immediate, const Device& device)
+    const NodePtr& cur_node, std::int64_t remove_size,
+    NodePtrList& remove_nodes, NodePtrList& fetch_nodes, const Device& device)
 {
   std::int64_t fetch_size =
       ((device.is_cuda()) ? CUDA_MEM_CTL(device.index())->GetFreeMemory()
@@ -405,16 +407,27 @@ FlowControllerFactory::DispatchRemoveAndFetch(
 
 
 #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+    auto cur_low_id = cur_node->corr_id & 0x00000000FFFFFFFF;
+    auto node_low_id = node->corr_id & 0x00000000FFFFFFFF;
+    std::uint32_t immediate = node_low_id - cur_low_id + 3;
+    std::uint32_t num_stream = NUM_PRIORITY - 1;
+    immediate = std::min(immediate, num_stream);
     auto it = node_location_.find(node->id);
-    std::thread prefetch_thread(
-        FetchThreadFunc, node, it->second, false, remove_cnt);
+
+    auto cb =
+        std::bind(FetchThreadFunc, node, it->second, immediate, remove_cnt);
+    FETCH_POOL->AddD2HTask(node, immediate, cb);
+
+    // std::thread prefetch_thread(
+    //     FetchThreadFunc, node, it->second, immediate, remove_cnt);
+    // SetThreadAffinity(prefetch_thread);
+    // SetThreadScheduling(prefetch_thread, SCHED_FIFO, -10);
 #else
     std::thread prefetch_thread(
-        FetchThreadFunc, node, DISK_DEVICE, false, remove_cnt);
+        FetchThreadFunc, node, DISK_DEVICE, 1, remove_cnt);
+    prefetch_thread.detach();
 #endif  // ENABLE_PREFETCH_FLOW_CONTROLLER
 
-
-    prefetch_thread.detach();
     // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
     remove_nodes.erase(remove_nodes.begin());
   }
@@ -430,9 +443,26 @@ FlowControllerFactory::DispatchRemoveAndFetch(
         ("FlowControllerFactory::CreatePrefetchThreadsGPU: fetch node = " +
          node->GetModelInstanceInfo())
             .c_str());
+#ifndef ENABLE_PREFETCH_FLOW_CONTROLLER
     std::thread prefetch_thread(
         FetchThreadFunc, node, device, immediate, remove_cnt);
     prefetch_thread.detach();
+#endif
+
+#ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+    auto cur_low_id = cur_node->corr_id & 0x00000000FFFFFFFF;
+    auto node_low_id = node->corr_id & 0x00000000FFFFFFFF;
+    std::uint32_t immediate = node_low_id - cur_low_id + 3;
+    std::uint32_t num_stream = NUM_PRIORITY - 1;
+    immediate = std::min(immediate, num_stream);
+    auto cb = std::bind(FetchThreadFunc, node, device, immediate, remove_cnt);
+    FETCH_POOL->AddTask(node, immediate, cb);
+    // std::thread prefetch_thread(
+    //     FetchThreadFunc, node, device, immediate, remove_cnt);
+    // SetThreadAffinity(prefetch_thread);
+    // SetThreadScheduling(prefetch_thread, SCHED_FIFO, -10);
+#endif
+
     // FetchThreadFunc(prefetch_node, DISK_DEVICE, false);
     fetch_nodes.erase(fetch_nodes.begin());
 
@@ -462,20 +492,20 @@ FlowControllerFactory::CreatePrefetchThreads(
        " nodes = " + std::to_string(removable_node_list.size()))
           .c_str());
   auto [prefetch_memory, prefetch_node_list] =
-      func(PREFETCH_BUCKET_SIZE * ((device.is_cuda()) ? 1 : 50), device);
+      func(PREFETCH_BUCKET_SIZE * ((device.is_cuda()) ? 1 : 2), device);
   LOG_TRITON_VERBOSE(("FlowControllerFactory::CreatePrefetchThreads: device " +
                       device.str() +
                       " prefetch_memory = " + std::to_string(prefetch_memory) +
                       " nodes = " + std::to_string(prefetch_node_list.size()) +
                       " free memory = " + std::to_string(free_memory))
                          .c_str());
-
-  if (!node->device.is_cuda() && device.is_cuda()) {
+#ifndef ENABLE_PREFETCH_FLOW_CONTROLLER
+  if (!node->device.is_cuda() && device == node->default_device) {
     prefetch_memory += node->byte_size;
     if (removable_memory + free_memory < node->byte_size) {
       LOG_TRITON_ERROR(
-          ("FlowControllerFactory::CreatePrefetchThreads: remove_size = " +
-           std::to_string(remove_size) +
+          ("FlowControllerFactory::CreatePrefetchThreads: free_memory = " +
+           std::to_string(free_memory) +
            " > removable_memory = " + std::to_string(removable_memory) +
            ", node size = " + std::to_string(node->byte_size))
               .c_str());
@@ -501,38 +531,43 @@ FlowControllerFactory::CreatePrefetchThreads(
       return false;
     }
 
+    // RELEASE_LOCKS(removable_node_list);
+    // removable_node_list.clear();
+
     NodePtrList immediant_nodes;
     immediant_nodes.push_back(node);
     DispatchRemoveAndFetch(
-        remove_size, removable_node_list, immediant_nodes, true, device);
+        node, remove_size, removable_node_list, immediant_nodes, device);
     remove_size = -1;
   }
-
+#endif  // ENABLE_PREFETCH_FLOW_CONTROLLER
 
   if (prefetch_memory > free_memory) {
     remove_size = prefetch_memory - free_memory;
   }
 
-  // if (remove_size > removable_memory) {
-  //   LOG_TRITON_VERBOSE(
-  //       ("FlowControllerFactory::CreatePrefetchThreadsGPU: remove_size = " +
-  //        std::to_string(remove_size) +
-  //        " > removable_memory = " + std::to_string(removable_memory))
-  //           .c_str());
-  //   RELEASE_LOCKS(removable_node_list);
-  //   RELEASE_LOCKS(prefetch_node_list);
-  //   return false;
-  // }
+  if (remove_size > removable_memory) {
+    LOG_TRITON_VERBOSE(
+        ("FlowControllerFactory::CreatePrefetchThreadsGPU: remove_size = " +
+         std::to_string(remove_size) +
+         " > removable_memory = " + std::to_string(removable_memory))
+            .c_str());
+    RELEASE_LOCKS(removable_node_list);
+    RELEASE_LOCKS(prefetch_node_list);
+    return false;
+  }
 
+  removable_memory = std::min(removable_memory, remove_size);
+  DispatchRemoveAndFetch(
+      node, removable_memory, removable_node_list, prefetch_node_list, device);
   // DispatchRemoveAndFetch(
   //     std::min(removable_memory, remove_size * 128), removable_node_list,
   //     prefetch_node_list, false, device);
-  if (device.is_cpu())
-    removable_memory = std::min(removable_memory, remove_size);
-  else
-    removable_memory = std::min(removable_memory, remove_size * 256);
-  DispatchRemoveAndFetch(
-      removable_memory, removable_node_list, prefetch_node_list, false, device);
+
+  // if (device.is_cpu())
+  //   removable_memory = std::min(removable_memory, remove_size);
+  // else
+
 
   RELEASE_LOCKS(removable_node_list);
   RELEASE_LOCKS(prefetch_node_list);
@@ -577,7 +612,7 @@ FlowControllerFactory::UpdateInitPrefetchNodes(
       func(prefetch_size, DEFAULT_CUDA_DEVICE);
 
   for (auto& prefetch_node : prefetch_node_list) {
-    prefetch_node->memory_type = MemoryType::kEmplacing;
+    // prefetch_node->memory_type = MemoryType::kEmplacing;
     prefetch_nodes.push_back(
         std::make_pair(prefetch_node, DEFAULT_CUDA_DEVICE));
   }
@@ -604,7 +639,7 @@ FlowControllerFactory::UpdateInitPrefetchNodes(
   if (memory_exceeded) {
     std::int64_t size_removed = 0;
     for (auto& remove_node : removable_node_list) {
-      remove_node->memory_type = MemoryType::kEvicting;
+      // remove_node->memory_type = MemoryType::kEvicting;
       prefetch_nodes.push_back(std::make_pair(remove_node, DISK_DEVICE));
       LOG_TRITON_VERBOSE(
           ("FlowControllerFactory::PrefetchNode: remove_node = " +
@@ -836,10 +871,43 @@ FlowControllerFactory::GetTotalGPUParamSize()
 //   return std::make_pair(size, node_ptr_list);
 // }
 
+FilterResult
+FlowControllerFactory::GetLFUNodes(const Device& device)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  NodePtrList node_ptr_list;
+  std::vector<NodeBodyPtr> node_body_list;
+  std::int64_t size = 0;
+  for (auto& stage : pipeline_.stages) {
+    CONTINUE_IF_NULL(stage)
+    for (auto& node_body : stage->nodes) {
+      CONTINUE_IF_NULL(node_body)
+      auto node = node_body->node;
+      if (node->mutex.try_lock()) {
+        bool remove = true;
+        if (node->device == device && remove) {
+          size += node->byte_size;
+          node_body_list.push_back(node_body);
+        } else
+          node->mutex.unlock();
+      }
+    }
+  }
+  std::sort(
+      node_body_list.begin(), node_body_list.end(),
+      [](const NodeBodyPtr& a, const NodeBodyPtr& b) {
+        return a->visit_cnt < b->visit_cnt;
+      });
+  for (auto& node_body : node_body_list) {
+    node_ptr_list.push_back(node_body->node);
+  }
+  return std::make_pair(size, node_ptr_list);
+}
 
 FilterResult
 FlowControllerFactory::GetLRUNodes(const Device& device)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   NodePtrList node_ptr_list;
   std::int64_t size = 0;
   for (auto& stage : pipeline_.stages) {
@@ -849,12 +917,18 @@ FlowControllerFactory::GetLRUNodes(const Device& device)
       auto node = node_body->node;
       if (node->mutex.try_lock()) {
         bool remove = true;
+#ifdef ENABLE_DEEPSPEED_FLOW_CONTROLLER
         for (auto& active_stage : last_active_stage_) {
-          remove &=
-              (node->corr_id & 0x00000000FFFFFFFF) >
-                  (active_stage.second + 32) ||
-              (node->corr_id & 0x00000000FFFFFFFF) < (active_stage.second);
+          auto node_low = node->corr_id & 0x00000000FFFFFFFF;
+          auto node_high = node->corr_id >> 32;
+          auto active_low = active_stage.first & 0x00000000FFFFFFFF;
+          auto active_high = active_stage.first >> 32;
+
+          remove &= (node_low > active_low + 24) || (node_low < active_low) ||
+                    ((node_low == active_low) && (node_high < active_high));
+          // assume that experts are requested from low to high
         }
+#endif
         if (node->device == device && remove) {
           size += node->byte_size;
           node_ptr_list.push_back(node);
