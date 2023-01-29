@@ -413,10 +413,9 @@ FlowControllerFactory::DispatchRemoveAndFetch(
     std::uint32_t num_stream = NUM_PRIORITY - 1;
     immediate = std::min(immediate, num_stream);
     auto it = node_location_.find(node->id);
-
     auto cb =
         std::bind(FetchThreadFunc, node, it->second, immediate, remove_cnt);
-    FETCH_POOL->AddD2HTask(node, immediate, cb);
+    FETCH_POOL->AddD2HTask(node, immediate  , cb);
 
     // std::thread prefetch_thread(
     //     FetchThreadFunc, node, it->second, immediate, remove_cnt);

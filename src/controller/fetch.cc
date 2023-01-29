@@ -54,6 +54,80 @@ SetThreadAffinity(std::thread& th)
 }
 
 void
+FetchThread(const NodePtr node, const Device device)
+{
+  // Memory operation on node must be synchronized
+  LOG_TRITON_VERBOSE(
+      ("FetchThread: node: " + node->GetModelInstanceInfo() +
+       " target device: " + device.str() + " cpu free memory " +
+       std::to_string(kHostMemoryPool->GetFreeMemory()) + " bytes" +
+       " gpu free memory " +
+       std::to_string(kDeviceMemoryPool->GetFreeMemory(device)) +
+       " bytes")
+          .c_str());
+  auto start_time = MCIROSECONDS_SINCE_EPOCH;
+  if (node->device == device) {
+    if (device.is_cuda()) {
+      node->last_access_time = MCIROSECONDS_SINCE_EPOCH;
+      node->last_prefetch_time = MCIROSECONDS_SINCE_EPOCH;
+    }
+    auto end_time = MCIROSECONDS_SINCE_EPOCH;
+    if (device.is_cuda()) {
+      char buffer[1024];
+      memset(buffer, 0, 1024);
+      sprintf(
+          buffer, "FetchThread: node: %s, device: %s, time cost %ld us",
+          node->GetModelInstanceInfo().c_str(), device.str().c_str(),
+          end_time - start_time);
+      LOG_TRITON_INFO(buffer);
+    }
+    return;
+  }
+
+  LOG_TRITON_VERBOSE(("FetchThread: node: " + node->GetModelInstanceInfo() +
+                      " lock acuired ")
+                         .c_str());
+  if (device.is_cuda()) {
+    node->last_access_time = MCIROSECONDS_SINCE_EPOCH;
+    node->last_prefetch_time = MCIROSECONDS_SINCE_EPOCH;
+  }
+
+  LOG_TRITON_VERBOSE(("FetchThread: node: " + node->GetModelInstanceInfo() +
+                      " stream acuired ")
+                         .c_str());
+
+  torch::InferenceMode infer_guard(true);
+  auto origin_device = node->device;
+  auto node_start_time = MCIROSECONDS_SINCE_EPOCH;
+  node->SetDevice(device);
+  auto node_end_time = MCIROSECONDS_SINCE_EPOCH;
+  if (device.is_cuda() && origin_device.is_cpu()) {
+    char buffer[1024];
+    memset(buffer, 0, 1024);
+    sprintf(
+        buffer, "FetchThread: node: %s, device: %s, move cost %ld us",
+        node->GetModelInstanceInfo().c_str(), device.str().c_str(),
+        node_end_time - node_start_time);
+    LOG_TRITON_INFO(buffer);
+  }
+
+  LOG_TRITON_VERBOSE(("FetchThread: node: " + node->GetModelInstanceInfo() +
+                      " memset acuired ")
+                         .c_str());
+  auto end_time = MCIROSECONDS_SINCE_EPOCH;
+
+  {
+    char buffer[2048];
+    memset(buffer, 0, 2048);
+    sprintf(
+        buffer, "FetchThreadFunc: node: %s, device: %s, time cost %ld us",
+        node->GetModelInstanceInfo().c_str(), device.str().c_str(),
+        end_time - start_time);
+    LOG_TRITON_INFO(buffer);
+  }
+}
+
+void
 FetchThreadFunc(
     const NodePtr node, const Device device, std::uint32_t immediate,
     CounterPtr counter)
@@ -109,8 +183,7 @@ FetchThreadFunc(
   // if (!immediate)
   //   node->mutex.lock();
 
-  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " +
-  node->GetModelInstanceInfo() +
+  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " + node->GetModelInstanceInfo() +
                       " lock acuired ")
                          .c_str());
   if (device.is_cuda()) {
@@ -120,8 +193,7 @@ FetchThreadFunc(
 
   auto device_id = device.index();
 
-  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " +
-  node->GetModelInstanceInfo() +
+  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " + node->GetModelInstanceInfo() +
                       " stream acuired ")
                          .c_str());
 
@@ -149,8 +221,7 @@ FetchThreadFunc(
     LOG_TRITON_INFO(buffer);
   }
 
-  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " +
-  node->GetModelInstanceInfo() +
+  LOG_TRITON_VERBOSE(("FetchThreadFunc: node: " + node->GetModelInstanceInfo() +
                       " memset acuired ")
                          .c_str());
 

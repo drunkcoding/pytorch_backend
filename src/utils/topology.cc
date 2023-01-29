@@ -1,24 +1,19 @@
 #include "topology.h"
 
+#include "controller/mem_ctrl.h"
+
 Node::Node(const std::string& model_path)
     : id(std::hash<std::string>{}(model_path)), corr_id(0), byte_size(0),
       last_access_time(MCIROSECONDS_SINCE_EPOCH), device(CPU_DEVICE),
       default_device(DEFAULT_CUDA_DEVICE), model_path_(model_path)
 {
-  model = ScriptModule(torch::jit::load(model_path));
-  cpu_model = model.copy();
-  std::int64_t param_size = 0;
-  for (const auto& param : model.parameters()) {
-    param_size += param.numel() * param.element_size();
+  model = new ScriptModule(torch::jit::load(model_path));
+  for (const auto& param : model->parameters()) {
+    byte_size += param.nbytes();
   }
-
-  // Iterate model buffers and calculate the total size of the model
-  std::int64_t buffer_size = 0;
-  for (const auto& buffer : model.buffers()) {
-    buffer_size += buffer.numel() * buffer.element_size();
+  for (const auto& buffer : model->buffers()) {
+    byte_size += buffer.nbytes();
   }
-  byte_size = param_size + buffer_size;
-  // mutex.unlock();
 }
 
 const std::string
@@ -38,108 +33,65 @@ Node::GetModelInstanceInfo() noexcept
 void
 Node::SetDevice(const Device& target_device) noexcept
 {
+  // std::lock_guard<std::mutex> lock(mutex);
   if (device == target_device)
     return;
 
-  // at::cuda::CUDAStreamGuard guard(
-  //     at::cuda::getStreamFromExternal(stream, default_device.index()));
-
   // InferenceMode should be used to guard all tensors operations including
   // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
+  at::InferenceMode infer_guard(true);
 
-  // LOG_TRITON_VERBOSE(("SetDevice: infer_guard " +
-  //                     std::to_string(infer_guard.is_enabled()) + " " +
-  //                     GetModelInstanceInfo() + " " + target_device.str())
-  //                        .c_str());
+
+  LOG_TRITON_VERBOSE(("SetDevice: infer_guard " +
+                      std::to_string(infer_guard.is_enabled()) + " " +
+                      GetModelInstanceInfo() + " " + target_device.str())
+                         .c_str());
 
   auto move_device = (target_device.is_cuda()) ? default_device : target_device;
 
   if (move_device == DISK_DEVICE) {
-    // move from CPU/GPU to SSD
-    RemoveModuleFromCache(&model);
-    cpu_model = ScriptModule();
-    model = ScriptModule();
-    is_loaded = false;
-  }
+    delete model;
+    model = nullptr;
+    if (host_memory_ptr != nullptr) {
+      kHostMemoryPool->FreeMemory(id, host_memory_ptr, byte_size, CPU_DEVICE);
+      host_memory_ptr = nullptr;
+    }
+    if (device_memory_ptr != nullptr) {
+      kDeviceMemoryPool->FreeMemory(id, device_memory_ptr, byte_size, device);
+      device_memory_ptr = nullptr;
+    }
+  } else {
+    if (model == nullptr) {
+      model = new ScriptModule(torch::jit::load(model_path_));
+      host_memory_ptr =
+          kHostMemoryPool->AllocateMemory(id, byte_size, CPU_DEVICE);
+      SetModuleContinuousMemory(model);
+      CopyModulePinnedMemory(model, host_memory_ptr);
+      SetModulePinnedMemory(model, host_memory_ptr);
+    }
 
-  if (device.is_cpu() && move_device.is_cuda()) {
-    // move from CPU to GPU
-    assert(is_loaded);
-    model = cpu_model.clone();
-    model.to(move_device);
-  }
+    if (move_device.is_cuda()) {
+      device_memory_ptr =
+          kDeviceMemoryPool->AllocateMemory(id, byte_size, move_device);
+      cudaMemcpyAsync(
+          device_memory_ptr, host_memory_ptr, byte_size,
+          cudaMemcpyHostToDevice);
+      cudaStreamSynchronize(0);
+      cudaPointerAttributes attr{};
+      cudaPointerGetAttributes(&attr, device_memory_ptr);
+      assert(attr.type != cudaMemoryTypeUnregistered);
+      SetModuleCudaMemory(model, device_memory_ptr, move_device);
+      LOG_TRITON_VERBOSE(("SetDevice: " + GetModelInstanceInfo() + " " +
+                          move_device.str() + " " + std::to_string(byte_size))
+                             .c_str());
+    }
 
-  if (device == DISK_DEVICE && move_device.is_cuda()) {
-    // move from SSD to GPU
-    model = ScriptModule(torch::jit::load(model_path_, move_device));
-
-    if (default_host.is_cpu()) {
-      cpu_model = model.copy();
-      is_loaded = true;
+    if (move_device.is_cpu() && device.is_cuda()) {
+      kDeviceMemoryPool->FreeMemory(id, device_memory_ptr, byte_size, device);
+      device_memory_ptr = nullptr;
+      SetModulePinnedMemory(model, host_memory_ptr);
     }
   }
-
-  if (device == DISK_DEVICE && move_device.is_cpu()) {
-    // move from SSD to CPU
-    cpu_model = ScriptModule(torch::jit::load(model_path_, move_device));
-    is_loaded = true;
-  }
-
-  if (device.is_cuda() && move_device.is_cpu()) {
-    // move from GPU to CPU
-    if (default_host.is_cpu() && !is_loaded) {
-      model.to(move_device);
-      cpu_model = model.clone();
-      is_loaded = true;
-    }
-    model = ScriptModule();
-  }
-
-
-  // if (target_device == DISK_DEVICE) {
-  //   delete model;
-  //   model = nullptr;
-  // } else {
-  //   if (model == nullptr)
-  //     model = new ScriptModule(torch::jit::load(model_path_, move_device));
-  //   else {
-  //     model.to(move_device);
-  //   }
-  // }
-
-  // if (waiting) {
-  //   mem_future.wait();
-  // }
-
-  // // In our context, lazy device stays on disk
-  // if (target_device == DISK_DEVICE) {
-  //   // RemoveModuleFromCache(&model);
-  //   delete model;
-  //   model = nullptr;
-  // } else if (model == nullptr) {
-  //   if (move_device.is_cuda())
-  //     Load(move_device);
-  //   else if (move_device.is_cpu()) {
-  //     waiting = true;
-  //     mem_future =
-  //         std::async(std::launch::async, &Node::Load, this, move_device);
-  //   }
-  // } else if (device.is_cuda() && move_device.is_cpu()) {
-  //   delete model;
-  //   model = nullptr;
-  //   waiting = true;
-  //   mem_future =
-  //       std::async(std::launch::async, &Node::Load, this, move_device);
-  // } else if (device.is_cpu() && move_device.is_cuda()) {
-  //   model.to(move_device);
-  // } else {
-  //   assert(false);
-  // }
-
-  // LOG_TRITON_VERBOSE(("SetDevice: infer_guard " +
-  //                     std::to_string(infer_guard.is_enabled()) + " " +
-  //                     GetModelInstanceInfo() + " " + target_device.str())
-  //                        .c_str());
   c10::cuda::CUDACachingAllocator::emptyCache();
   device = move_device;
 }

@@ -10,6 +10,8 @@ typedef std::shared_ptr<std::atomic_int> CounterPtr;
 void FetchThreadFunc(
     const NodePtr node, const Device device, std::uint32_t immediate,
     CounterPtr counter);
+void FetchThread(
+    const NodePtr node, const Device device);
 void PrefetchThreadFunc(const NodePtr& node);
 
 // bool IsNodeReady(const NodePtr& node);

@@ -48,7 +48,7 @@ option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHTRT "Enable TorchTRT support" OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" ON)
 
-option(CONTROLLER_TYPE "for baseline test, deepspeed/counter/prefetch" "")
+option(CONTROLLER_TYPE "for baseline test, deepspeed/counter/prefetch" "prefetch")
 
 set(TRITON_PYTORCH_DOCKER_IMAGE "" CACHE STRING "Docker image containing the PyTorch build required by backend.")
 set(TRITON_PYTORCH_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
@@ -119,14 +119,20 @@ FetchContent_Declare(
   GIT_TAG v0.8.2
   GIT_SHALLOW ON
 )
+FetchContent_Declare(
+  rmm
+  GIT_REPOSITORY https://github.com/rapidsai/rmm.git
+  GIT_TAG v22.10.00
+)
 
-# FetchContent_GetProperties(magic_enum)
-# if (NOT magic_enum_POPULATED)
-# FetchContent_Populate(magic_enum)
-# add_subdirectory(${magic_enum_SOURCE_DIR} ${magic_enum_BINARY_DIR})
-# include_directories(${magic_enum_SOURCE_DIR})
-# endif ()
-FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum)
+FetchContent_GetProperties(rmm)
+if (NOT rmm_POPULATED)
+  FetchContent_Populate(rmm)
+  # add_subdirectory(${rmm_SOURCE_DIR} ${magic_enum_BINARY_DIR})
+  message(STATUS "rmm_SOURCE_DIR: ${rmm_SOURCE_DIR}/include")
+  include_directories(${rmm_SOURCE_DIR}/include)
+endif ()
+FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum rmm)
 
 if ("${CONTROLLER_TYPE}" STREQUAL "deepspeed")
   add_compile_definitions(ENABLE_DEEPSPEED_FLOW_CONTROLLER)
@@ -312,7 +318,7 @@ set(CMAKE_CXX_STANDARD 17)
 #set compiler to clang
 set(CMAKE_CXX_COMPILER "c++")
 #set cpp debug flag
-list(APPEND CXX_FLAGS "-ggdb3 -stdlib=libc++")
+list(APPEND CXX_FLAGS "-g -Wall -stdlib=libc++")
 
 add_library(
   triton-pytorch-backend SHARED

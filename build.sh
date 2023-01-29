@@ -4,5 +4,5 @@ cd build
 make clean
 cmake -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
     -DTRITON_PYTORCH_DOCKER_IMAGE=nvcr.io/nvidia/pytorch:22.08-py3  \
-    -DCONTROLLER_TYPE="deepspeed" ..
+    -DCONTROLLER_TYPE="prefetch" ..
 make install

@@ -96,7 +96,7 @@ ModelState::LoadModel(
   *node = std::make_shared<Node>(*model_path);
   (*node)->default_device = device;
 
-  *torch_model = MODULE_PTR_NODELETE(&((*node)->cpu_model));
+  *torch_model = MODULE_PTR_NODELETE((*node)->model);
 
   TRITONSERVER_Message* model_config_message;
   RETURN_IF_ERROR(TRITONBACKEND_ModelConfig(

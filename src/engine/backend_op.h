@@ -44,28 +44,28 @@ struct BackendExecuteResponse : BackendOpResponse {
 
 struct BackendLoadRequest : BackendOpRequest {
   NodePtr node;
-  Device from = META_DEVICE;
-  Device to = META_DEVICE;
+  Device from = DISK_DEVICE;
+  Device to = DISK_DEVICE;
   BackendCallback cb;
   BackendLoadRequest() : BackendOpRequest(BackendOpType::kLoad) {}
 };
 struct BackendLoadResponse : BackendOpResponse {
   NodePtr node;
-  Device from = META_DEVICE;
-  Device to = META_DEVICE;
+  Device from = DISK_DEVICE;
+  Device to = DISK_DEVICE;
   BackendLoadResponse() : BackendOpResponse(BackendOpType::kLoad) {}
 };
 
 struct BackendUnloadResponse : BackendOpResponse {
   NodePtr node;
-  Device from = META_DEVICE;
-  Device to = META_DEVICE;
+  Device from = DISK_DEVICE;
+  Device to = DISK_DEVICE;
   BackendUnloadResponse() : BackendOpResponse(BackendOpType::kUnload) {}
 };
 struct BackendUnloadRequest : BackendOpRequest {
   NodePtr node;
-  Device from = META_DEVICE;
-  Device to = META_DEVICE;
+  Device from = DISK_DEVICE;
+  Device to = DISK_DEVICE;
   // LoopHandle* handle;
   BackendCallback cb;
   BackendUnloadRequest() : BackendOpRequest(BackendOpType::kUnload) {}

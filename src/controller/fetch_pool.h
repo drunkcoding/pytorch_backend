@@ -1,16 +1,81 @@
 #pragma once
 
+#include <deque>
 #include <iostream>
 #include <list>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "fetch.h"
 #include "stream_ctrl.h"
 #include "utils/class_utils.h"
 #include "utils/functor.h"
+#include "utils/state.h"
 #include "utils/topology.h"
+#include "utils/torch_utils.h"
+
+#define SKIP_TO_NEXT_ITERATION                               \
+  lock.unlock();                                             \
+  std::this_thread::sleep_for(std::chrono::milliseconds(1)); \
+  continue;
+
+struct Task {
+  NodePtr node;
+  std::vector<NodePtr> remove_nodes;
+  std::uint32_t priority;
+  std::uint64_t request_id;
+  Device src_device = DISK_DEVICE;
+  Device dst_device = DISK_DEVICE;
+
+  std::string DebugString()
+  {
+    std::stringstream ss;
+    ss << "Task: node: " << node->GetModelInstanceInfo()
+       << ", priority: " << priority << "[" << src_device.str() << "->"
+       << dst_device.str() << "]";
+    return ss.str();
+  }
+};
+typedef std::shared_ptr<Task> TaskPtr;
+
+class TaskPool : public muduo::noncopyable {
+ public:
+  void StartExec(const std::uint64_t& request_id, const NodePtr& node);
+  void StopExec(const std::uint64_t& request_id, const NodePtr& node);
+  void Prefetch(const std::uint64_t& request_id, const NodePtr& node);
+
+  static TaskPool* GetInstance() { return new TaskPool(); }
+
+ private:
+  void D2HThreadFunc();
+  void H2DThreadFunc();
+  void UnifiedThreadFunc();
+  bool RemoveMemoryForNode(const NodePtr& node, const Device& device);
+
+  void ScheduleTask(const std::uint64_t& request_id, const TaskPtr& task);
+
+  TaskPool();
+  ~TaskPool() = default;
+
+  std::string DebugString(const std::vector<std::deque<TaskPtr> >& queue);
+
+ private:
+  std::vector<std::deque<TaskPtr> > h2d_queue_;
+  std::vector<std::deque<TaskPtr> > d2h_queue_;
+  std::vector<std::deque<TaskPtr> > unified_queue_;
+  std::unordered_map<std::uint64_t, TaskPtr> exec_queue_;
+  std::mutex mutex_;
+
+  std::unordered_set<std::size_t> moving_nodes_;
+
+  std::list<std::thread> d2h_threads_;
+  std::list<std::thread> h2d_threads_;
+  std::list<std::thread> unified_threads_;
+};
+
+extern TaskPool* kTaskPool;
 
 /*
  * A Basic Thread Pool using std::thread
@@ -40,14 +105,14 @@ class FetchPool : public muduo::noncopyable {
       d2h_thread.detach();
       d2h_threads_.push_back(std::move(d2h_thread));
 
-      // auto top_thread = std::thread(&FetchPool::TopThreadFunc, this);
-      // SetThreadAffinity(top_thread);
+      auto top_thread = std::thread(&FetchPool::TopThreadFunc, this);
+      SetThreadAffinity(top_thread);
       // SetThreadScheduling(top_thread, SCHED_RR, -20);
-      // top_thread.detach();
-      // top_threads_.push_back(std::move(top_thread));
+      top_thread.detach();
+      top_threads_.push_back(std::move(top_thread));
     }
     running_ = true;
-    top_thread_ = std::thread(&FetchPool::TopThreadFunc, this);
+    // top_thread_ = std::thread(&FetchPool::TopThreadFunc, this);
 
     lock.unlock();
   }
@@ -80,6 +145,8 @@ class FetchPool : public muduo::noncopyable {
   std::thread top_thread_;
   std::vector<tasks_t> priorities_;
   std::vector<tasks_t> d2h_priorities_;
+  std::unordered_map<std::uint64_t, NodePtr> d2h_nodes_;
+  std::unordered_map<std::uint64_t, NodePtr> h2d_nodes_;
   std::unordered_map<std::uint64_t, NodePtr> nodes_;
   std::mutex mutex_;
   std::mutex d2h_mutex_;

@@ -7,6 +7,7 @@
 #include "controller/fetch_pool.h"
 #include "controller/mem_ctrl.h"
 #include "controller/stream_ctrl.h"
+#include "controller/topology_pool.h"
 #include "dataflow/flow_controller.h"
 #include "dataflow/prefetch_flow_controller.h"
 #include "engine/libtorch_engine.h"
@@ -31,20 +32,23 @@ void
 ModelInstanceState::ProcessRequests(
     TRITONBACKEND_Request** requests, const uint32_t request_count)
 {
-  // auto time_now = MCIROSECONDS_SINCE_EPOCH;
-  // for (size_t i = 0; i < request_count; i++) {
-  //   if (requests[i] != nullptr) {
-  //     std::stringstream ss;
-  //     ss << "ModelInstanceState::ProcessRequests: "
-  //        << node_->GetModelInstanceInfo();
-  //     ss << " T[" << time_now << "]";
-  //     ss << " ID[" << std::hex << GetCorrelationID(requests[i]) << ","
-  //        << GetRequestID(requests[i]) << std::dec << "]";
-  //     LOG_TRITON_INFO(ss.str().c_str());
-  //   }
-  // }
+// auto time_now = MCIROSECONDS_SINCE_EPOCH;
+// for (size_t i = 0; i < request_count; i++) {
+//   if (requests[i] != nullptr) {
+//     std::stringstream ss;
+//     ss << "ModelInstanceState::ProcessRequests: "
+//        << node_->GetModelInstanceInfo();
+//     ss << " T[" << time_now << "]";
+//     ss << " ID[" << std::hex << GetCorrelationID(requests[i]) << ","
+//        << GetRequestID(requests[i]) << std::dec << "]";
+//     LOG_TRITON_INFO(ss.str().c_str());
+//   }
+// }
+#ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+  FETCH_POOL->RemoveTask(node_->corr_id);
+#endif  // ENABLE_PREFETCH_FLOW_CONTROLLER
 
-  
+
   NVTX_RANGE(nvtx_, "ProcessRequests " + Name());
 
   uint64_t exec_start_ns = 0;
@@ -160,7 +164,7 @@ ModelInstanceState::ProcessRequests(
 #endif
   }
 
-auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
+  auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
   if (!all_response_failed) {
     collector.reset(new BackendInputCollector(
         requests, request_count, &responses,
@@ -179,7 +183,7 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
     cuda_copy = false;
   }
 #endif
-  
+
 
   std::vector<torch::jit::IValue> output_tensors;
   uint64_t compute_start_ns = 0;
@@ -191,8 +195,8 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
           reinterpret_cast<void*>(&compute_infer_start_event_)));
 
   // Run...
-  at::cuda::CUDAStream torch_stream = at::cuda::getStreamFromExternal(
-      CUDA_STREAM_CTRL(DeviceId())->GetStream(2), DeviceId());
+  at::cuda::CUDAStream torch_stream =
+      at::cuda::getStreamFromExternal(CUDA_STREAM(DeviceId(), 1), DeviceId());
   at::cuda::CUDAStreamGuard guard(torch_stream);
 
   auto data_end_time = MCIROSECONDS_SINCE_EPOCH;
@@ -209,15 +213,15 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
 
   node_->corr_id = GetCorrelationID(requests[0]);
 
-  FETCH_POOL->PrioritizeTask(node_, 0);
+  // FETCH_POOL->PrioritizeTask(node_, 0);
 
   // no response needed just wait
   auto start_time = MCIROSECONDS_SINCE_EPOCH;
   // LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequests: node: " +
   //                     node_->GetModelInstanceInfo() + ", waiting for lock")
   //                        .c_str());
-  node_->memory_type = MemoryType::kLocked;
-  node_->mutex.lock();
+  // node_->memory_type = MemoryType::kLocked;
+  // node_->mutex.lock();
   // LOG_TRITON_VERBOSE(("ModelInstanceState::ProcessRequests: node: " +
   //                     node_->GetModelInstanceInfo() + ", got lock")
   //                        .c_str());
@@ -233,84 +237,142 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
     LOG_TRITON_INFO(buffer);
   }
 
-#ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
-  int prefetch_cnt = 0;
+  // #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+  //   int prefetch_cnt = 0;
+  //   start_time = MCIROSECONDS_SINCE_EPOCH;
+  //   CounterPtr remove_cnt = std::make_shared<std::atomic<int>>(0);
+  //   while (CUDA_MEM_CTL(node_->default_device.index())
+  //              ->TryAllocateMemory(node_->id, node_->byte_size) ==
+  //          MemoryStatus::kFailed) {
+  //     auto free_memory =
+  //         CUDA_MEM_CTL(node_->default_device.index())->GetFreeMemory();
+  //     auto [removable_memory, removable_node_list] =
+  //         FLOW_CONTROLLER->GetLFUNodes(node_->default_device);
+  //     std::vector<std::thread> threads;
+
+  //     LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
+  //                      node_->GetModelInstanceInfo() +
+  //                      ", free memory: " + std::to_string(free_memory) +
+  //                      ", removable memory: " +
+  //                      std::to_string(removable_memory))
+  //                         .c_str());
+  //     auto remove_start_time = MCIROSECONDS_SINCE_EPOCH;
+  //     auto remove_size = node_->byte_size - free_memory;
+
+  //     NodePtrList remove_node_list;
+  //     while (remove_size > 0 && !removable_node_list.empty()) {
+  //       auto it = removable_node_list.begin();
+  //       auto remove_node = *it;
+  //       remove_cnt->fetch_add(1);
+  //       auto cb =
+  //           std::bind(FetchThreadFunc, node_, node_->default_host, 1,
+  //           remove_cnt);
+  //       FETCH_POOL->AddD2HTask(remove_node, 1, cb);
+  //       remove_node_list.push_back(remove_node);
+  //       // std::thread prefetch_thread(
+  //       //     FetchThreadFunc, remove_node, remove_node->default_host, 3,
+  //       //     remove_cnt);
+  //       // SetThreadAffinity(prefetch_thread);
+  //       // // SetThreadScheduling(prefetch_thread, SCHED_FIFO, -20);
+  //       // threads.push_back(std::move(prefetch_thread));
+  //       remove_size -= node_->byte_size;
+  //       removable_node_list.erase(it);
+  //     }
+  //     RELEASE_LOCKS(removable_node_list);
+  //     // for (auto& thread : threads) {
+  //     //   thread.join();
+  //     // }
+  //     bool all_remove_done = false;
+  //     while (!all_remove_done) {
+  //       all_remove_done = true;
+  //       for (auto& remove_node : remove_node_list) {
+  //         if (remove_node->device.is_cuda()) {
+  //           all_remove_done = false;
+  //           break;
+  //         }
+  //       }
+  //     }
+
+  //     auto remove_end_time = MCIROSECONDS_SINCE_EPOCH;
+  //     LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
+  //                      node_->GetModelInstanceInfo() + ", remove time: " +
+  //                      std::to_string(remove_end_time - remove_start_time) +
+  //                      " us, remove count: " +
+  //                      std::to_string(remove_cnt->load()))
+  //                         .c_str());
+  //     prefetch_cnt++;
+  //     if (prefetch_cnt % 1000 == 0) {
+  //       LOG_TRITON_ERROR(("ModelInstanceState::ProcessRequests: node: " +
+  //                         node_->GetModelInstanceInfo() +
+  //                         ", failed to allocate memory, free memory: " +
+  //                         std::to_string(free_memory) +
+  //                         ", remove memory: " +
+  //                         std::to_string(removable_memory) +
+  //                         ", node size: " + std::to_string(node_->byte_size))
+  //                            .c_str());
+  //     }
+  //   }
+  //   if (node_->device.is_cpu())
+  //     SYS_MEM_CTL->FreeMemory(node_->id, node_->byte_size);
+
+  //   auto cb =
+  //       std::bind(FetchThreadFunc, node_, node_->default_device, 0,
+  //       remove_cnt);
+  //   FETCH_POOL->AddTask(node_, 0, cb);
+
+  //   int wait_count = 0;
+  //   while (!node_->device.is_cuda()) {
+  //     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  //     wait_count++;
+  //     if (wait_count % 1000 == 0) {
+  //       LOG_TRITON_ERROR(("ModelInstanceState::ProcessRequests: node: " +
+  //                         node_->GetModelInstanceInfo() +
+  //                         ", wait_count: " + std::to_string(wait_count))
+  //                            .c_str());
+  //     }
+  //   }
+  //   auto it = node_->model->parameters().begin();
+  //   end_time = MCIROSECONDS_SINCE_EPOCH;
+  //   {
+  //     char buffer[1024];
+  //     memset(buffer, 0, 1024);
+  //     sprintf(
+  //         buffer,
+  //         "ModelInstanceState::ProcessRequests: node: %s, tensor %s, wait
+  //         count "
+  //         "%d,"
+  //         "device wait time: %ld us",
+  //         node_->GetModelInstanceInfo().c_str(),
+  //         (*it).device().str().c_str(), wait_count, end_time - start_time);
+  //     LOG_TRITON_INFO(buffer);
+  //   }
+  // #endif
+  //   // DecCntShm();
+
+  //   // if name does not contain expert
+  //   // if (Name().find("expert") == std::string::npos) {
+  //     auto execute_request = std::make_shared<LibtorchExecuteRequest>();
+  //     execute_request->node = node_;
+  //     execute_request->engine = engine_;
+  //     // execute_request->process_requests_cb = process_func;
+  //     // execute_request->mutex = &mutex_;
+  //     // execute_request->cv = &cv_;
+  //     execute_request->input_id = std::make_shared<InputID>();
+  //     execute_request->input_id->correlation_id =
+  //     GetCorrelationID(requests[0]); execute_request->input_id->request_id =
+  //     GetRequestID(requests[0]);
+
+  //     kLibtorchEngine->Init();
+  //     kLibtorchEngine->ProcessRequest(execute_request);
+  //   // }
+  auto correlation_id = GetCorrelationID(requests[0]);
+  auto request_id = GetRequestID(requests[0]);
+  kTopologyPool->PutNodeToPipeline(request_id, correlation_id, node_);
+  kTopologyPool->TraceRequest(request_id, correlation_id, node_);
+  kTaskPool->StartExec(request_id, node_);
+  kTaskPool->Prefetch(request_id, node_);
+
   start_time = MCIROSECONDS_SINCE_EPOCH;
-  CounterPtr remove_cnt = std::make_shared<std::atomic<int>>(0);
-  while (CUDA_MEM_CTL(node_->default_device.index())
-             ->TryAllocateMemory(node_->id, node_->byte_size) ==
-         MemoryStatus::kFailed) {
-    auto free_memory =
-        CUDA_MEM_CTL(node_->default_device.index())->GetFreeMemory();
-    auto [removable_memory, removable_node_list] =
-        FLOW_CONTROLLER->GetLFUNodes(node_->default_device);
-    std::vector<std::thread> threads;
-
-    LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
-                     node_->GetModelInstanceInfo() +
-                     ", free memory: " + std::to_string(free_memory) +
-                     ", removable memory: " + std::to_string(removable_memory))
-                        .c_str());
-    auto remove_start_time = MCIROSECONDS_SINCE_EPOCH;
-    auto remove_size = node_->byte_size - free_memory;
-
-    NodePtrList remove_node_list;
-    while (remove_size > 0 && !removable_node_list.empty()) {
-      auto it = removable_node_list.begin();
-      auto remove_node = *it;
-      remove_cnt->fetch_add(1);
-      auto cb =
-          std::bind(FetchThreadFunc, node_, node_->default_host, 1, remove_cnt);
-      FETCH_POOL->AddD2HTask(remove_node, 1, cb);
-      remove_node_list.push_back(remove_node);
-      // std::thread prefetch_thread(
-      //     FetchThreadFunc, remove_node, remove_node->default_host, 3,
-      //     remove_cnt);
-      // SetThreadAffinity(prefetch_thread);
-      // // SetThreadScheduling(prefetch_thread, SCHED_FIFO, -20);
-      // threads.push_back(std::move(prefetch_thread));
-      remove_size -= node_->byte_size;
-      removable_node_list.erase(it);
-    }
-    RELEASE_LOCKS(removable_node_list);
-    // for (auto& thread : threads) {
-    //   thread.join();
-    // }
-    bool all_remove_done = false;
-    while (!all_remove_done) {
-      all_remove_done = true;
-      for (auto& remove_node : remove_node_list) {
-        if (remove_node->device.is_cuda()) {
-          all_remove_done = false;
-          break;
-        }
-      }
-    }
-
-    auto remove_end_time = MCIROSECONDS_SINCE_EPOCH;
-    LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
-                     node_->GetModelInstanceInfo() + ", remove time: " +
-                     std::to_string(remove_end_time - remove_start_time) +
-                     " us, remove count: " + std::to_string(remove_cnt->load()))
-                        .c_str());
-    prefetch_cnt++;
-    if (prefetch_cnt % 1000 == 0) {
-      LOG_TRITON_ERROR(("ModelInstanceState::ProcessRequests: node: " +
-                        node_->GetModelInstanceInfo() +
-                        ", failed to allocate memory, free memory: " +
-                        std::to_string(free_memory) +
-                        ", remove memory: " + std::to_string(removable_memory) +
-                        ", node size: " + std::to_string(node_->byte_size))
-                           .c_str());
-    }
-  }
-  if (node_->device.is_cpu())
-    SYS_MEM_CTL->FreeMemory(node_->id, node_->byte_size);
-
-  auto cb =
-      std::bind(FetchThreadFunc, node_, node_->default_device, 0, remove_cnt);
-  FETCH_POOL->AddTask(node_, 0, cb);
-
   int wait_count = 0;
   while (!node_->device.is_cuda()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -328,47 +390,14 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
     memset(buffer, 0, 1024);
     sprintf(
         buffer,
-        "ModelInstanceState::ProcessRequests: node: %s, "
+        "ModelInstanceState::ProcessRequests: node: %s, wait count: %d,"
         "device wait time: %ld us",
-        node_->GetModelInstanceInfo().c_str(), end_time - start_time);
+        node_->GetModelInstanceInfo().c_str(), wait_count,
+        end_time - start_time);
     LOG_TRITON_INFO(buffer);
   }
-#endif
-  // DecCntShm();
 
-  auto execute_request = std::make_shared<LibtorchExecuteRequest>();
-  execute_request->node = node_;
-  execute_request->engine = engine_;
-  // execute_request->process_requests_cb = process_func;
-  // execute_request->mutex = &mutex_;
-  // execute_request->cv = &cv_;
-  execute_request->input_id = std::make_shared<InputID>();
-  execute_request->input_id->correlation_id = GetCorrelationID(requests[0]);
-  execute_request->input_id->request_id = GetRequestID(requests[0]);
-
-  kLibtorchEngine->Init();
-  kLibtorchEngine->ProcessRequest(execute_request);
-
-#ifndef ENABLE_PREFETCH_FLOW_CONTROLLER
-  start_time = MCIROSECONDS_SINCE_EPOCH;
-  int wait_count = 0;
-  while (!node_->device.is_cuda()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    wait_count++;
-    if (wait_count % 1000 == 0) {
-      LOG_TRITON_ERROR(("ModelInstanceState::ProcessRequests: node: " +
-                        node_->GetModelInstanceInfo() +
-                        ", wait_count: " + std::to_string(wait_count))
-                           .c_str());
-    }
-  }
-  end_time = MCIROSECONDS_SINCE_EPOCH;
-  LOG_TRITON_INFO(("ModelInstanceState::ProcessRequests: node: " +
-                   node_->GetModelInstanceInfo() + ", device wait time: " +
-                   std::to_string(end_time - start_time))
-                      .c_str());
-#endif
-  torch_model_ = MODULE_PTR_NODELETE(&node_->model);
+  torch_model_ = MODULE_PTR_NODELETE(node_->model);
 
   start_time = MCIROSECONDS_SINCE_EPOCH;
   if (!all_response_failed) {
@@ -387,14 +416,16 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
     LOG_TRITON_INFO(buffer);
   }
 #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
-  torch::InferenceMode infer_guard(true);
-  node_->SetDevice(node_->default_host);
-  CUDA_MEM_CTL(node_->default_device.index())
-      ->FreeMemory(node_->id, node_->byte_size);
-  // FETCH_POOL->RemoveTask(node_->corr_id);
+  kTaskPool->StopExec(request_id, node_);
 #endif
-  node_->memory_type = MemoryType::kReady;
-  node_->mutex.unlock();
+  // #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
+  //   torch::InferenceMode infer_guard(true);
+  //   node_->SetDevice(node_->default_host);
+  //   CUDA_MEM_CTL(node_->default_device.index())
+  //       ->FreeMemory(node_->id, node_->byte_size);
+  // #endif
+  // node_->memory_type = MemoryType::kReady;
+  // node_->mutex.unlock();
 
   LOG_MESSAGE(
       TRITONSERVER_LOG_VERBOSE,
@@ -518,7 +549,7 @@ auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
         "failed reporting batch request statistics");
   }
 
-  // c10::cuda::CUDACachingAllocator::emptyCache();
+  c10::cuda::CUDACachingAllocator::emptyCache();
 
   // node_->memory_type = MemoryType::kReady;
   // lock.unlock();

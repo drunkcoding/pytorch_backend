@@ -7,6 +7,8 @@
 #include <future>
 #include <memory>
 
+#include "controller/mem_ctrl.h"
+#include "controller/stream_ctrl.h"
 #include "log_utils.h"
 #include "muduo/base/Mutex.h"
 #include "state.h"
@@ -21,46 +23,40 @@
  * 3. Pipeline: a list of stages that represents the whole topology
  */
 
-inline void
-RemoveModuleFromCache(torch::jit::script::Module* model)
-{
-  for (auto it = model->parameters().begin(); it != model->parameters().end();
-       ++it) {
-    (*it).unsafeReleaseIntrusivePtr().reset();
-  }
-
-
-  for (auto it = model->buffers().begin(); it != model->buffers().end(); ++it) {
-    (*it).unsafeReleaseIntrusivePtr().reset();
-  }
-}
+struct MemoryInfo {
+  std::int64_t offset;
+  std::int64_t size;
+};
 
 struct Node {
-  ScriptModule model;      // always use raw pointer, since we need
-                           // to manage the memory by ourselves
-  MemoryType memory_type;  // indicating whether the node is executing or
-                           // controlled by flow controller
+  ScriptModule* model = nullptr;  // always use raw pointer, since we need
+                                  // to manage the memory by ourselves
+  MemoryType memory_type;         // indicating whether the node is executing or
+                                  // controlled by flow controller
   std::size_t id;
   std::size_t corr_id;
   std::int64_t byte_size;
   std::size_t last_access_time;
   std::size_t
       last_prefetch_time;  // the last time when the node is prefetched to GPU
-  Device device;
+  Device device = DISK_DEVICE;
   Device default_device;
   Device default_host = DISK_DEVICE;
   cudaStream_t stream;
 
   // for fetch thread synchronization
   // muduo::MutexLock mutex;
+
   std::mutex mutex;
-  ScriptModule cpu_model;
+
 
  private:
   std::string model_path_;
-  // bool waiting = false;
-  // std::future<void> mem_future;
   bool is_loaded = false;
+  std::vector<MemoryInfo> memory_info;
+  void* host_memory_ptr = nullptr;
+  void* device_memory_ptr = nullptr;
+
 
   // void Load(const Device device)
   // {
@@ -74,8 +70,19 @@ struct Node {
   void SetDevice(const Device& target_device) noexcept;
 };
 typedef std::shared_ptr<Node> NodePtr;
-typedef std::vector<NodePtr> NodePtrList;
+typedef std::deque<NodePtr> NodePtrList;
 typedef std::tuple<std::int64_t, NodePtrList> FilterResult;
+
+
+#define ALLOC_HOST_MEMORY() \
+  kHostMemoryPool->AllocateMemory(id, byte_size, CPU_DEVICE)
+#define FREE_HOST_MEMORY() \
+  kHostMemoryPool->FreeMemory(id, host_memory_ptr, byte_size, CPU_DEVICE)
+#define ALLOC_DEVICE_MEMORY(device) \
+  kDeviceMemoryPool->AllocateMemory(id, byte_size, device)
+#define FREE_DEVICE_MEMORY(device) \
+  kDeviceMemoryPool->FreeMemory(id, device_memory_ptr, byte_size, device)
+
 
 struct NodeBody;
 typedef std::shared_ptr<NodeBody> NodeBodyPtr;
