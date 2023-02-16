@@ -13,8 +13,8 @@
 #include "utils/state.h"
 #include "utils/torch_utils.h"
 
-#define DEFAULT_SYSTEM_FREE_MEMORY GetTotalSystemMemory() * 0.3
-#define DEFAULT_CUDA_FREE_MEMORY(idx) GetTotalDeviceMemory(idx) * 0.3
+#define DEFAULT_SYSTEM_FREE_MEMORY GetTotalSystemMemory() * 0.5
+#define DEFAULT_CUDA_FREE_MEMORY(idx) GetTotalDeviceMemory(idx) * 0.4
 
 typedef rmm::mr::cuda_memory_resource CudaMemoryResource;
 typedef std::shared_ptr<CudaMemoryResource> CudaMemoryResourcePtr;

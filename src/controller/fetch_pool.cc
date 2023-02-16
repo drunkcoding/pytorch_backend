@@ -7,6 +7,7 @@
 #include "utils/log_utils.h"
 #include "utils/shm_utils.h"
 #include "utils/time_utils.h"
+#include "utils/torch_utils.h"
 
 TaskPool* kTaskPool = TaskPool::GetInstance();
 
@@ -16,7 +17,7 @@ TaskPool::TaskPool()
   d2h_queue_.resize(NUM_PRIORITY);
   unified_queue_.resize(NUM_PRIORITY);
 
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < 5; ++i) {
     // auto h2d_thread = std::thread(&TaskPool::H2DThreadFunc, this);
     // SetThreadAffinity(h2d_thread);
     // h2d_thread.detach();
@@ -31,6 +32,12 @@ TaskPool::TaskPool()
     SetThreadAffinity(unified_thread);
     unified_thread.detach();
     unified_threads_.push_back(std::move(unified_thread));
+  }
+
+  int num_gpus = GetDeviceCount();
+  c10::cuda::CUDACachingAllocator::init(num_gpus);
+  for (int i = 0; i < num_gpus; ++i) {
+    c10::cuda::CUDACachingAllocator::setMemoryFraction(0.3, i);
   }
 }
 
@@ -90,6 +97,7 @@ TaskPool::StopExec(const std::uint64_t& request_id, const NodePtr& node)
 
   assert(task->src_device != task->dst_device);
 
+  /* Not Keeping any live parameters */
   {
     std::lock_guard<std::mutex> lock(mutex_);
     unified_queue_[task->priority].push_back(task);
@@ -98,6 +106,9 @@ TaskPool::StopExec(const std::uint64_t& request_id, const NodePtr& node)
   // ScheduleTask(request_id, task);
 }
 
+void TaskPool::ZeroControlThreadFunc() {
+
+}
 
 void
 TaskPool::UnifiedThreadFunc()
@@ -113,19 +124,26 @@ TaskPool::UnifiedThreadFunc()
     }
 
     if (max_priority == 1000) {
+      lock.unlock();
       SKIP_TO_NEXT_ITERATION
     }
 
-    LOG_TRITON_VERBOSE(DebugString(unified_queue_).c_str());
+    // LOG_TRITON_VERBOSE(DebugString(unified_queue_).c_str());
 
     // pop the task from the highest priority queue
     TaskPtr task = unified_queue_[max_priority].front();
     auto node = task->node;
     unified_queue_[max_priority].pop_front();
 
+    LOG_TRITON_VERBOSE(("Execute task " + task->DebugString()).c_str());
+
     std::uint64_t low_corr_id = node->corr_id & 0xFFFFFFFF;
     if (low_corr_id < kTopologyPool->GetLastActivateStage(task->request_id) &&
         task->priority > 0) {
+      LOG_TRITON_ERROR(("Node " + std::to_string(node->id) +
+                        " is not activated, skip the task")
+                           .c_str());
+      lock.unlock();
       SKIP_TO_NEXT_ITERATION
     }
 
@@ -135,6 +153,8 @@ TaskPool::UnifiedThreadFunc()
     node->mutex.lock();
     std::stringstream ss;
     ss << std::hex << node->id;
+
+    LOG_TRITON_VERBOSE(("Verify task " + task->DebugString()).c_str());
 
     // DISK->CPU
     if (task->src_device == DISK_DEVICE && task->dst_device == CPU_DEVICE) {
@@ -245,9 +265,9 @@ TaskPool::UnifiedThreadFunc()
       }
     }
 
-    {
+    if (task->dst_device != DISK_DEVICE) {
       auto start_time = MCIROSECONDS_SINCE_EPOCH;
-      auto success = RemoveMemoryForNode(node, task->src_device);
+      auto success = RemoveMemoryForNode(node, task->dst_device);
       auto end_time = MCIROSECONDS_SINCE_EPOCH;
       {
         char buffer[2048];
@@ -263,6 +283,10 @@ TaskPool::UnifiedThreadFunc()
         node->mutex.unlock();
         lock.lock();
         unified_queue_[task->priority].push_back(task);
+        LOG_TRITON_INFO(("Task: " + task->DebugString() +
+                         " evict failed, insert back to queue")
+                            .c_str());
+        lock.unlock();
         SKIP_TO_NEXT_ITERATION
       }
     }
@@ -402,11 +426,90 @@ TaskPool::H2DThreadFunc()
 }
 
 void
+TaskPool::StrideByLayer(const std::uint64_t& request_id, const NodePtr& node)
+{
+  auto root_id = node->corr_id & 0xFFFFFFFF;
+
+  int num_gpus = GetDeviceCount();
+  for (int i = 0; i < num_gpus; i++) {
+    std::int64_t gpu_size_limit = 1024 * 1024 * 1024 * 2LL;
+    for (auto& candidate :
+         kTopologyPool->GetConsecutiveNodes(CUDA_DEVICE(i), node)) {
+      gpu_size_limit -= candidate->byte_size;
+      if (gpu_size_limit < 0) {
+        break;
+      }
+
+      auto low_id = candidate->corr_id & 0xFFFFFFFF;
+      auto task = std::make_shared<Task>();
+      task->node = candidate;
+      task->priority = std::min(low_id - root_id, NUM_PRIORITY - 1);
+      task->dst_device = candidate->default_device;
+
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unified_queue_[task->priority].push_back(task);
+      }
+    }
+  }
+}
+
+void
+TaskPool::Stride(const std::uint64_t& request_id, const NodePtr& node)
+{
+  int num_gpus = GetDeviceCount();
+  for (int i = 0; i < num_gpus; i++) {
+    std::int64_t gpu_size_limit = 1024 * 1024 * 1024 * 2LL;
+    for (auto& candidate :
+         kTopologyPool->GetConsecutiveNodes(CUDA_DEVICE(i), node)) {
+      gpu_size_limit -= candidate->byte_size;
+      if (gpu_size_limit < 0) {
+        break;
+      }
+
+      auto task = std::make_shared<Task>();
+      task->node = candidate;
+      task->priority = 0;
+      task->dst_device = candidate->default_device;
+
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unified_queue_[task->priority].push_back(task);
+      }
+    }
+  }
+}
+
+void TaskPool::Count(const std::uint64_t& request_id, const NodePtr& node) {
+  int num_gpus = GetDeviceCount();
+  for (int i = 0; i < num_gpus; i++) {
+    std::int64_t gpu_size_limit = 1024 * 1024 * 1024 * 2LL;
+    for (auto& candidate :
+         kTopologyPool->GetTopKNodes(CUDA_DEVICE(i), node, 50)) {
+      gpu_size_limit -= candidate->byte_size;
+      if (gpu_size_limit < 0) {
+        break;
+      }
+
+      auto task = std::make_shared<Task>();
+      task->node = candidate;
+      task->priority = 0;
+      task->dst_device = candidate->default_device;
+
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unified_queue_[task->priority].push_back(task);
+      }
+    }
+  }
+}
+
+void
 TaskPool::Prefetch(const std::uint64_t& request_id, const NodePtr& node)
 {
   auto root_id = node->corr_id & 0xFFFFFFFF;
-  auto gpu_candidates = kTopologyPool->GetTopKChildNodes(node, 0, 20);
-  auto cpu_candidates = kTopologyPool->GetTopKChildNodes(node, 20, 50);
+  auto gpu_candidates = kTopologyPool->GetTopKChildNodes(node, 0, 50);
+  auto cpu_candidates = kTopologyPool->GetTopKChildNodes(node, 50, 100);
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -498,6 +601,13 @@ TaskPool::RemoveMemoryForNode(const NodePtr& node, const Device& device)
         removable_node_list.begin(), removable_node_list.end(),
         exec_task.second->node);
   }
+
+  LOG_TRITON_INFO(("RemoveMemoryForNode: node: " +
+                   node->GetModelInstanceInfo() + " device: " + device.str() +
+                   " free_memory: " + std::to_string(free_memory) +
+                   " node->byte_size: " + std::to_string(node->byte_size) +
+                   " remove_size: " + std::to_string(remove_size))
+                      .c_str());
 
   lock.unlock();
 

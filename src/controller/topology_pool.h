@@ -12,6 +12,8 @@ class TopologyPool : public muduo::noncopyable {
       const std::uint64_t& request_id, const std::uint64_t& correlation_id,
       const NodePtr& node);
   NodePtrList GetLFUNodes(const Device& device);
+  NodePtrList GetConsecutiveNodes(const Device& device, const NodePtr& node);
+  NodePtrList GetTopKNodes(const Device& device, const NodePtr& node, const std::size_t& k);
   NodePtrList GetTopKChildNodes(const NodePtr& node, const std::size_t& k, const std::size_t& skip);
   void TraceRequest(
       const std::uint64_t& request_id, const std::uint64_t& correlation_id,

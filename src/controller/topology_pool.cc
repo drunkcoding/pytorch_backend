@@ -18,7 +18,7 @@ TopologyPool::TraceRequest(
                       ", request_id: " + std::to_string(request_id) +
                       ", correlation_id: " + std::to_string(correlation_id))
                          .c_str());
-
+  std::lock_guard<std::mutex> lock(mutex_);
   if (request_time_.find(request_id) == request_time_.end()) {
     request_time_.insert({request_id, now});
   }
@@ -43,6 +43,7 @@ TopologyPool::TraceRequest(
   }
   request_trace_[request_id] = stage;
 
+
   auto node_id = node->id;
   auto memory_size = node->byte_size;
   if (node_location_.find(node_id) == node_location_.end()) {
@@ -55,16 +56,14 @@ TopologyPool::TraceRequest(
       node->default_host = DISK_DEVICE;
     }
   }
+
   visit_count_ += 1;
-  if (visit_count_ % 500 == 0) {
-    ReorderNodeLocations();
-  }
+  ReorderNodeLocations();
 }
 
 void
 TopologyPool::ReorderNodeLocations()
 {
-  std::lock_guard<std::mutex> lock(mutex_);
   // Sort node body according to the visit count
   std::vector<NodeBodyPtr> node_bodies;
   for (auto& stage : pipeline_.stages) {
@@ -335,6 +334,61 @@ TopologyPool::GetLFUNodes(const Device& device)
     CONTINUE_IF_NULL(node_body);
     if (node_body->node->device == device) {
       nodes.push_back(node_body->node);
+    }
+  }
+  return nodes;
+}
+
+NodePtrList TopologyPool::GetTopKNodes(const Device& device, const NodePtr& node, const std::size_t& k) {
+  NodePtrList nodes;
+  auto root_stage_id = node->corr_id & 0xFFFFFFFF;
+  auto root_node_id = node->corr_id >> 32;
+  std::vector<NodeBodyPtr> candidates;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (std::uint64_t stage_idx = root_stage_id;
+       stage_idx < pipeline_.stages.size(); ++stage_idx) {
+    auto stage = pipeline_.stages[stage_idx];
+    BREAK_IF_NULL(stage)
+    
+    for (std::uint64_t node_idx = root_node_id; node_idx < stage->nodes.size();
+         ++node_idx) {
+      auto node_body = stage->nodes[node_idx];
+      CONTINUE_IF_NULL(node_body)
+      if (node_body->node->device == device) {
+        candidates.push_back(node_body);
+      }
+    }
+  }
+  // sort candidates by visit count descending
+  std::sort(
+      candidates.begin(), candidates.end(),
+      [](const NodeBodyPtr& a, const NodeBodyPtr& b) {
+        return a->visit_cnt > b->visit_cnt;
+      });
+  for (std::size_t i = 0; i < k && i < candidates.size(); ++i) {
+    nodes.push_back(candidates[i]->node);
+  }
+  return nodes;
+}
+
+NodePtrList
+TopologyPool::GetConsecutiveNodes(const Device& device, const NodePtr& node)
+{
+  NodePtrList nodes;
+  auto root_stage_id = node->corr_id & 0xFFFFFFFF;
+  auto root_node_id = node->corr_id >> 32;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (std::uint64_t stage_idx = root_stage_id;
+       stage_idx < pipeline_.stages.size(); ++stage_idx) {
+    auto stage = pipeline_.stages[stage_idx];
+    BREAK_IF_NULL(stage)
+    for (std::uint64_t node_idx = root_node_id; node_idx < stage->nodes.size();
+         ++node_idx) {
+      auto node_body = stage->nodes[node_idx];
+      CONTINUE_IF_NULL(node_body)
+      if (node_body->node->device == device) {
+        nodes.push_back(node_body->node);
+      }
     }
   }
   return nodes;

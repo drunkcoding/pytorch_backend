@@ -202,7 +202,7 @@ ModelState::ParseParameters()
            " for model instance '" + Name() + "'")
               .c_str());
     }
-    enable_tensor_fuser_pair_ = { true, true};
+    enable_tensor_fuser_pair_ = {true, true};
 
     // If 'ENABLE_WEIGHT_SHARING' is not present in 'parameters' then no
     // update is made to 'enable_weight_sharing'.
@@ -289,7 +289,7 @@ ModelState::ParseParameters()
                                      .c_str());
     }
   }
-  enable_nvfuser_pair_ = {true, true}; 
+  enable_nvfuser_pair_ = {true, true};
 
   return nullptr;
 }

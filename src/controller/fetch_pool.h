@@ -17,7 +17,6 @@
 #include "utils/torch_utils.h"
 
 #define SKIP_TO_NEXT_ITERATION                               \
-  lock.unlock();                                             \
   std::this_thread::sleep_for(std::chrono::milliseconds(1)); \
   continue;
 
@@ -45,6 +44,9 @@ class TaskPool : public muduo::noncopyable {
   void StartExec(const std::uint64_t& request_id, const NodePtr& node);
   void StopExec(const std::uint64_t& request_id, const NodePtr& node);
   void Prefetch(const std::uint64_t& request_id, const NodePtr& node);
+  void Stride(const std::uint64_t& request_id, const NodePtr& node);
+  void Count(const std::uint64_t& request_id, const NodePtr& node);
+  void StrideByLayer(const std::uint64_t& request_id, const NodePtr& node);
 
   static TaskPool* GetInstance() { return new TaskPool(); }
 
@@ -52,6 +54,7 @@ class TaskPool : public muduo::noncopyable {
   void D2HThreadFunc();
   void H2DThreadFunc();
   void UnifiedThreadFunc();
+  void ZeroControlThreadFunc();
   bool RemoveMemoryForNode(const NodePtr& node, const Device& device);
 
   void ScheduleTask(const std::uint64_t& request_id, const TaskPtr& task);
