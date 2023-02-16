@@ -46,15 +46,15 @@ option(TRITON_ENABLE_GPU "Enable GPU support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHTRT "Enable TorchTRT support" OFF)
-option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" ON)
+option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" OFF)
 
 set(TRITON_PYTORCH_DOCKER_IMAGE "" CACHE STRING "Docker image containing the PyTorch build required by backend.")
 set(TRITON_PYTORCH_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
 set(TRITON_PYTORCH_LIB_PATHS "" CACHE PATH "Paths to Torch libraries")
 
-set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
-set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
-set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
+set(TRITON_BACKEND_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/backend repo")
+set(TRITON_CORE_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/core repo")
+set(TRITON_COMMON_REPO_TAG "r22.08" CACHE STRING "Tag for triton-inference-server/common repo")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -204,17 +204,26 @@ if (${TRITON_PYTORCH_DOCKER_BUILD})
     COMMAND docker rm pytorch_backend_ptlib || echo "error ignored..." || true
     COMMAND docker create --name pytorch_backend_ptlib ${TRITON_PYTORCH_DOCKER_IMAGE}
     COMMAND /bin/sh -c "for i in ${CONDA_LIBS_STR} ; do echo copying $i && docker cp -L pytorch_backend_ptlib:/opt/conda/lib/$i $i ; done"
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libc10.so libc10.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libc10_cuda.so libc10_cuda.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch.so libtorch.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so libtorch_cpu.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_cuda.so libtorch_cuda.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_global_deps.so libtorch_global_deps.so
-    COMMAND docker cp pytorch_backend_ptlib:/opt/pytorch/vision/build/libtorchvision.so libtorchvision.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libc10.so libc10.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libc10_cuda.so libc10_cuda.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libc10.so libc10.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libc10_cuda.so libc10_cuda.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch.so libtorch.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libtorch.so libtorch.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so libtorch_cpu.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_cuda.so libtorch_cuda.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libtorch_cpu.so libtorch_cpu.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libtorch_cuda.so libtorch_cuda.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/lib/libtorch_global_deps.so libtorch_global_deps.so
+    COMMAND cp $ENV{HOME}/pytorch/build/install/lib/libtorch_global_deps.so libtorch_global_deps.so
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/pytorch/vision/build/libtorchvision.so libtorchvision.so
+    # COMMAND cp $ENV{HOME}/pytorch/vision/build/libtorchvision.so libtorchvision.so
     COMMAND /bin/sh -c "if [ ${TRITON_PYTORCH_ENABLE_TORCHTRT} = 'ON' ]; then docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/lib/libtorchtrt_runtime.so libtorchtrt_runtime.so; fi"
     COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch_tensorrt/bin/torchtrtc torchtrtc || echo "error ignored..." || true
     COMMAND docker cp pytorch_backend_ptlib:/opt/pytorch/pytorch/LICENSE LICENSE.pytorch
-    COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/include include/torch
+    # COMMAND docker cp pytorch_backend_ptlib:/opt/conda/lib/python3.8/site-packages/torch/include include/torch
+    COMMAND mkdir -p include/torch
+    COMMAND cp -R $ENV{HOME}/pytorch/build/install/include/. include/torch/.
     COMMAND docker cp pytorch_backend_ptlib:/opt/pytorch/pytorch/torch/csrc/jit/codegen include/torch/torch/csrc/jit/.
     COMMAND docker cp pytorch_backend_ptlib:/opt/pytorch/vision/torchvision/csrc include/torchvision/torchvision
     COMMAND docker cp pytorch_backend_ptlib:/usr/lib/${LIBS_ARCH}-linux-gnu/libopencv_videoio.so.3.4.11 libopencv_videoio.so
@@ -256,6 +265,8 @@ add_library(
   src/libtorch.cc
   src/libtorch_utils.cc
   src/libtorch_utils.h
+  src/gds_load.cpp
+  src/gds_load.h
 )
 
 add_library(
@@ -385,6 +396,8 @@ if(${TRITON_ENABLE_GPU})
     triton-pytorch-backend
     PRIVATE
       CUDA::cudart
+      CUDA::cublas
+      /usr/local/cuda/lib64/libcufile.so
   )
 endif() # TRITON_ENABLE_GPU
 

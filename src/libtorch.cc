@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <exception>
+#include "gds_load.h"
 #include "libtorch_utils.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
@@ -200,6 +201,29 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
   }
 }
 
+int loadPipedAsync(const std::string& tensor_filename,
+              const std::string& meta_filename, const torch::Device& device,
+              PipelineLoader& loader, torch::jit::script::Module& module) {
+  try {
+    void* tensor_pool = nullptr;
+    // load asynchrously
+    int ret = loader.loadAsync(tensor_filename.c_str(), 0, &tensor_pool);
+    if (ret != 0) {
+      std::cerr << "error loading the tensor file " << tensor_filename
+                << std::endl;
+      return -1;
+    }
+    module = torch::jit::fastLoad(meta_filename, device, tensor_pool);
+    loader.waitUntilReady();
+  } catch (const c10::Error& e) {
+    std::cerr << "error loading the model " << meta_filename << " " << e.msg()
+              << std::endl;
+    return -1;
+  }
+
+  return 0;
+}
+
 TRITONSERVER_Error*
 ModelState::LoadModel(
     const std::string& artifact_name, const torch::Device device,
@@ -251,27 +275,38 @@ ModelState::LoadModel(
   // model loading: https://pytorch.org/cppdocs/notes/inference_mode.html
   torch::InferenceMode infer_guard(EnabledInferenceMode());
 
-  try {
-    std::istringstream model_stream(model_data_str);
-    torch_model->reset(
-        new torch::jit::Module(torch::jit::load(model_stream, device)));
-  }
-  catch (const std::exception& ex) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("failed to load model '" + Name() + "': " + ex.what()).c_str());
-  }
+  std::string converted_model_path = "/data/bert_direct/";
+  
 
-  if (enable_weight_sharing_) {
-    if (!((torch_models_.emplace(device_pair, *torch_model)).second)) {
-      std::string type = device.is_cpu() ? "CPU" : "GPU";
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_WARN,
-          (std::string("Model already found on target ") + type + " device " +
-           "(id " + std::to_string(device.index()) + ") for '" + Name() + "'")
-              .c_str());
-    }
-  }
+  std::string tensor_filename = converted_model_path + "tensor.rt";
+  std::string meta_filename = converted_model_path + "meta.pt";
+  torch::jit::script::Module module;
+  PipelineLoader loader(4);
+
+  loadPipedAsync(tensor_filename, meta_filename, device, loader, module);
+  torch_model->reset(new torch::jit::script::Module(module));
+
+  // try {
+  //   std::istringstream model_stream(model_data_str);
+  //   torch_model->reset(
+  //       new torch::jit::Module(torch::jit::load(model_stream, device)));
+  // }
+  // catch (const std::exception& ex) {
+  //   return TRITONSERVER_ErrorNew(
+  //       TRITONSERVER_ERROR_INTERNAL,
+  //       ("failed to load model '" + Name() + "': " + ex.what()).c_str());
+  // }
+
+  // if (enable_weight_sharing_) {
+  //   if (!((torch_models_.emplace(device_pair, *torch_model)).second)) {
+  //     std::string type = device.is_cpu() ? "CPU" : "GPU";
+  //     LOG_MESSAGE(
+  //         TRITONSERVER_LOG_WARN,
+  //         (std::string("Model already found on target ") + type + " device " +
+  //          "(id " + std::to_string(device.index()) + ") for '" + Name() + "'")
+  //             .c_str());
+  //   }
+  // }
 
   return nullptr;  // success
 }
@@ -582,6 +617,12 @@ ModelInstanceState::ModelInstanceState(
     : BackendModelInstance(model_state, triton_model_instance),
       model_state_(model_state), device_(torch::kCPU), is_dict_input_(false)
 {
+
+  {
+    GDSLoader loader;
+    loader.cudaInit();
+  }
+
   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
 #ifdef TRITON_ENABLE_GPU
     device_ = torch::Device(torch::kCUDA, DeviceId());
