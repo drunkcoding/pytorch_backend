@@ -55,9 +55,13 @@ class TaskPool : public muduo::noncopyable {
   void H2DThreadFunc();
   void UnifiedThreadFunc();
   void ZeroControlThreadFunc();
+  void ZeroControlPipeThreadFunc();
   bool RemoveMemoryForNode(const NodePtr& node, const Device& device);
 
+  bool ValidateTask(const TaskPtr& task);
+
   void ScheduleTask(const std::uint64_t& request_id, const TaskPtr& task);
+  void SetNodeDevice(const TaskPtr& task);
 
   TaskPool();
   ~TaskPool() = default;
@@ -67,7 +71,8 @@ class TaskPool : public muduo::noncopyable {
  private:
   std::vector<std::deque<TaskPtr> > h2d_queue_;
   std::vector<std::deque<TaskPtr> > d2h_queue_;
-  std::vector<std::deque<TaskPtr> > unified_queue_;
+  std::vector<std::deque<TaskPtr> > unified_queue_; // For ordered prefetch
+  std::deque<TaskPtr> zero_control_queue_; // For unordered prefetch
   std::unordered_map<std::uint64_t, TaskPtr> exec_queue_;
   std::mutex mutex_;
 
@@ -76,6 +81,11 @@ class TaskPool : public muduo::noncopyable {
   std::list<std::thread> d2h_threads_;
   std::list<std::thread> h2d_threads_;
   std::list<std::thread> unified_threads_;
+
+  // For metrics
+  std::atomic_uint64_t hit_count_{0};
+  std::atomic_uint64_t unused_count_{0};
+  std::atomic_uint64_t total_task_count_{0};
 };
 
 extern TaskPool* kTaskPool;

@@ -2,6 +2,8 @@
 
 #include "controller/mem_ctrl.h"
 
+std::atomic_int32_t kGPUDeviceCount = 0;
+
 Node::Node(const std::string& model_path)
     : id(std::hash<std::string>{}(model_path)), corr_id(0), byte_size(0),
       last_access_time(MCIROSECONDS_SINCE_EPOCH), device(CPU_DEVICE),
@@ -63,8 +65,9 @@ Node::SetDevice(const Device& target_device) noexcept
   } else {
     if (model == nullptr) {
       model = new ScriptModule(torch::jit::load(model_path_));
+      int numa_id = default_device.index() / 4;
       host_memory_ptr =
-          kHostMemoryPool->AllocateMemory(id, byte_size, CPU_DEVICE);
+          kHostMemoryPool->AllocateMemory(id, byte_size, torch::Device(torch::kCPU, numa_id));
       SetModuleContinuousMemory(model);
       CopyModulePinnedMemory(model, host_memory_ptr);
       SetModulePinnedMemory(model, host_memory_ptr);
@@ -73,13 +76,13 @@ Node::SetDevice(const Device& target_device) noexcept
     if (move_device.is_cuda()) {
       device_memory_ptr =
           kDeviceMemoryPool->AllocateMemory(id, byte_size, move_device);
-      cudaMemcpyAsync(
+      cudaMemcpy(
           device_memory_ptr, host_memory_ptr, byte_size,
           cudaMemcpyHostToDevice);
-      cudaStreamSynchronize(0);
-      cudaPointerAttributes attr{};
-      cudaPointerGetAttributes(&attr, device_memory_ptr);
-      assert(attr.type != cudaMemoryTypeUnregistered);
+      // cudaStreamSynchronize(0);
+      // cudaPointerAttributes attr{};
+      // cudaPointerGetAttributes(&attr, device_memory_ptr);
+      // assert(attr.type != cudaMemoryTypeUnregistered);
       SetModuleCudaMemory(model, device_memory_ptr, move_device);
       LOG_TRITON_VERBOSE(("SetDevice: " + GetModelInstanceInfo() + " " +
                           move_device.str() + " " + std::to_string(byte_size))

@@ -28,7 +28,6 @@ cmake_minimum_required(VERSION 3.18)
 
 project(tritonpytorchbackend LANGUAGES C CXX)
 
-
 #
 # Options
 #
@@ -49,6 +48,16 @@ option(TRITON_PYTORCH_ENABLE_TORCHTRT "Enable TorchTRT support" OFF)
 option(TRITON_PYTORCH_ENABLE_TORCHVISION "Enable Torchvision support" ON)
 
 option(CONTROLLER_TYPE "for baseline test, deepspeed/counter/prefetch" "prefetch")
+
+# Microbenchmark options
+# none: no prefetching
+# unctrl-full: fully uncontrolled, will run a thread for every fetch
+# unctrl-pipe: fully uncontrolled, will run a thread for every fetch in layer order
+# ctrl-full: fully controlled, limited number of threads, and fetch in layer and likelihood order
+# ctrl-pipe: fully controlled, limited number of threads, and fetch in layer order
+# ctrl-zero: fully controlled, limited number of threads, but FIFO
+# ctrl-prob: fully controlled, limited number of threads, and fetch in likelihood order
+option(PREFETCH_BREAKDOWN "for microbenchmark, none/unctrl-full/unctrl-os/unctrl-pipe/ctrl-full/ctrl-pipe/ctrl-zero/ctrl-prob" "none")
 
 set(TRITON_PYTORCH_DOCKER_IMAGE "" CACHE STRING "Docker image containing the PyTorch build required by backend.")
 set(TRITON_PYTORCH_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
@@ -99,7 +108,6 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/triton-inference-server/common.git
   GIT_TAG ${TRITON_COMMON_REPO_TAG}
   GIT_SHALLOW ON
-  
 )
 FetchContent_Declare(
   repo-core
@@ -126,24 +134,47 @@ FetchContent_Declare(
 )
 
 FetchContent_GetProperties(rmm)
-if (NOT rmm_POPULATED)
+
+if(NOT rmm_POPULATED)
   FetchContent_Populate(rmm)
+
   # add_subdirectory(${rmm_SOURCE_DIR} ${magic_enum_BINARY_DIR})
   message(STATUS "rmm_SOURCE_DIR: ${rmm_SOURCE_DIR}/include")
   include_directories(${rmm_SOURCE_DIR}/include)
-endif ()
+endif()
+
 FetchContent_MakeAvailable(repo-common repo-core repo-backend magic-enum rmm)
 
-if ("${CONTROLLER_TYPE}" STREQUAL "deepspeed")
+if("${CONTROLLER_TYPE}" STREQUAL "deepspeed")
   add_compile_definitions(ENABLE_DEEPSPEED_FLOW_CONTROLLER)
-elseif ("${CONTROLLER_TYPE}" STREQUAL "counter")
+elseif("${CONTROLLER_TYPE}" STREQUAL "counter")
   add_compile_definitions(ENABLE_COUNTER_FLOW_CONTROLLER)
-elseif ("${CONTROLLER_TYPE}" STREQUAL "prefetch")
+elseif("${CONTROLLER_TYPE}" STREQUAL "prefetch")
   add_compile_definitions(ENABLE_PREFETCH_FLOW_CONTROLLER)
-elseif ("${CONTROLLER_TYPE}" STREQUAL "nonfetch")
+elseif("${CONTROLLER_TYPE}" STREQUAL "nonfetch")
   add_compile_definitions(ENABLE_NONFETCH_FLOW_CONTROLLER)
 else()
   message(FATAL_ERROR "CONTROLLER_TYPE is not set, must be one of deepspeed/counter/prefetch")
+endif()
+
+if("${PREFETCH_BREAKDOWN}" STREQUAL "unctrl-full")
+  add_compile_definitions(PREFETCH_UNCTRL_FULL)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "unctrl-os")
+  add_compile_definitions(PREFETCH_UNCTRL_OS)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "unctrl-pipe")
+  add_compile_definitions(PREFETCH_UNCTRL_PIPE)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "ctrl-full")
+  add_compile_definitions(PREFETCH_CTRL_FULL)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL " ctrl-pipe")
+  add_compile_definitions(PREFETCH_CTRL_PIPE)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "ctrl-zero")
+  add_compile_definitions(PREFETCH_CTRL_ZERO)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "ctrl-prob")
+  add_compile_definitions(PREFETCH_CTRL_PROB)
+elseif("${PREFETCH_BREAKDOWN}" STREQUAL "none")
+  add_compile_definitions(PREFETCH_NONE)
+else()
+  message(FATAL_ERROR "PREFETCH_BREAKDOWN is not set, must be one of unctrl-full/unctrl-os/unctrl-pipe/ctrl-full/ctrl-pipe/ctrl-zero/ctrl-prob")
 endif()
 
 #
@@ -292,9 +323,9 @@ endif() # TRITON_PYTORCH_DOCKER_BUILD
 set(MUDUO_TOP_DIR $ENV{HOME}/muduo)
 include_directories(${MUDUO_TOP_DIR})
 link_directories(${MUDUO_TOP_DIR}/build/lib)
+
 # link_directories(${CMAKE_CURRENT_SOURCE_DIR}/uevent/build)
 # link_directories(${CMAKE_CURRENT_SOURCE_DIR}/uevent/base/build)
-
 file(GLOB UTILS_SRC src/utils/*.cc)
 file(GLOB DATAFLOW_SRC src/dataflow/*.cc)
 file(GLOB ENGINE_SRC src/engine/*.cc)
@@ -313,12 +344,14 @@ file(GLOB CONTROLLER_INC src/controller/*.h)
 # ${BASE_INC}
 # )
 
-#set cpp standard to c++17
+# set cpp standard to c++17
 set(CMAKE_CXX_STANDARD 17)
-#set compiler to clang
+
+# set compiler to clang
 set(CMAKE_CXX_COMPILER "c++")
-#set cpp debug flag
-list(APPEND CXX_FLAGS "-g -Wall -stdlib=libc++")
+
+# set cpp debug flag
+list(APPEND CXX_FLAGS "-Wall -O3 -stdlib=libc++")
 
 add_library(
   triton-pytorch-backend SHARED
@@ -348,6 +381,7 @@ target_include_directories(
   PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}
+
   # ${CMAKE_CURRENT_SOURCE_DIR}/uevent/base
   ${Python3_INCLUDE_DIRS}
 )
@@ -462,6 +496,7 @@ target_link_libraries(
   triton-backend-utils # from repo-backend
   ${TRITON_PYTORCH_LDFLAGS}
   ${TRITON_PYTORCH_LIBS}
+
   # uevent
   # uevent_base
   muduo_base

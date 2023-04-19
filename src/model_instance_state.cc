@@ -149,7 +149,7 @@ ModelInstanceState::ProcessRequests(
 #endif
   }
 
-  auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
+  // auto data_start_time = MCIROSECONDS_SINCE_EPOCH;
   if (!all_response_failed) {
     collector.reset(new BackendInputCollector(
         requests, request_count, &responses,
@@ -184,16 +184,16 @@ ModelInstanceState::ProcessRequests(
       at::cuda::getStreamFromExternal(CUDA_STREAM(DeviceId(), 1), DeviceId());
   at::cuda::CUDAStreamGuard guard(torch_stream);
 
-  auto data_end_time = MCIROSECONDS_SINCE_EPOCH;
-  {
-    char buffer[1024];
-    memset(buffer, 0, 1024);
-    sprintf(
-        buffer,
-        "ModelInstanceState::ProcessRequests: node: %s, data time: %ld us",
-        node_->GetModelInstanceInfo().c_str(), data_end_time - data_start_time);
-    LOG_TRITON_INFO(buffer);
-  }
+  // auto data_end_time = MCIROSECONDS_SINCE_EPOCH;
+  // {
+  //   char buffer[1024];
+  //   memset(buffer, 0, 1024);
+  //   sprintf(
+  //       buffer,
+  //       "ModelInstanceState::ProcessRequests: node: %s, data time: %ld us",
+  //       node_->GetModelInstanceInfo().c_str(), data_end_time - data_start_time);
+  //   LOG_TRITON_INFO(buffer);
+  // }
 
   node_->corr_id = GetCorrelationID(requests[0]);
 
@@ -203,8 +203,9 @@ ModelInstanceState::ProcessRequests(
   kTopologyPool->TraceRequest(request_id, correlation_id, node_);
   kTaskPool->StartExec(request_id, node_);
 
+#ifndef PREFETCH_NONE
 #ifdef ENABLE_PREFETCH_FLOW_CONTROLLER
-  // kTaskPool->Prefetch(request_id, node_);
+  kTaskPool->Prefetch(request_id, node_);
 #endif
 
 #ifdef ENABLE_DEEPSPEED_FLOW_CONTROLLER
@@ -213,6 +214,7 @@ ModelInstanceState::ProcessRequests(
 
 #ifdef ENABLE_COUNTER_FLOW_CONTROLLER
   kTaskPool->Count(request_id, node_);
+#endif
 #endif
 
 
@@ -843,6 +845,13 @@ ModelInstanceState::Execute(
 {
   NVTX_RANGE(nvtx_, "Execute " + Name());
 
+  // // move input_tensors to node->default_device
+  // for (auto& input_tensor : *input_tensors) {
+  //   if (input_tensor.isTensor()) {
+  //     input_tensor = input_tensor.toTensor().to(node_->device);
+  //   }
+  // }
+
   torch::jit::IValue model_outputs_;
 
   try {
@@ -966,6 +975,18 @@ ModelInstanceState::Execute(
             TRITONSERVER_ERROR_INTERNAL,
             ("PyTorch execute failure: " + std::string(ex.what())).c_str()));
   }
+
+  // // move the output tensors to device_
+  // for (auto& output : *output_tensors) {
+  //   if (output.isTensor()) {
+  //     output = output.toTensor().to(device_);
+  //   } else if (output.isList()) {
+  //     auto list_output = output.toList();
+  //     for (size_t i = 0; i < list_output.size(); i++) {
+  //       list_output.set(i, list_output.get(i).toTensor().to(device_));
+  //     }
+  //   }
+  // }
 
   //   LOG_MESSAGE(
   //       TRITONSERVER_LOG_VERBOSE,

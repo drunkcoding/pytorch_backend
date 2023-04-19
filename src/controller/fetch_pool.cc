@@ -17,7 +17,9 @@ TaskPool::TaskPool()
   d2h_queue_.resize(NUM_PRIORITY);
   unified_queue_.resize(NUM_PRIORITY);
 
-  for (int i = 0; i < 5; ++i) {
+  int num_gpu = GetDeviceCount();
+
+  for (int i = 0; i < num_gpu * 3; ++i) {
     // auto h2d_thread = std::thread(&TaskPool::H2DThreadFunc, this);
     // SetThreadAffinity(h2d_thread);
     // h2d_thread.detach();
@@ -27,8 +29,19 @@ TaskPool::TaskPool()
     // SetThreadAffinity(d2h_thread);
     // d2h_thread.detach();
     // d2h_threads_.push_back(std::move(d2h_thread));
-
+#ifdef PREFETCH_CTRL_FULL
     auto unified_thread = std::thread(&TaskPool::UnifiedThreadFunc, this);
+#endif
+
+#if defined(PREFETCH_UNCTRL_FULL) || defined(PREFETCH_UNCTRL_OS)
+    auto unified_thread = std::thread(&TaskPool::ZeroControlThreadFunc, this);
+#endif
+
+#if defined(PREFETCH_UNCTRL_PIPE)
+    auto unified_thread =
+        std::thread(&TaskPool::ZeroControlPipeThreadFunc, this);
+#endif
+
     SetThreadAffinity(unified_thread);
     unified_thread.detach();
     unified_threads_.push_back(std::move(unified_thread));
@@ -57,18 +70,34 @@ TaskPool::StartExec(const std::uint64_t& request_id, const NodePtr& node)
       std::stringstream ss;
       ss << "Node " << std::hex << node->id << " is already in exec queue";
       LOG_TRITON_ERROR(ss.str().c_str());
+      hit_count_++;
       return;
     }
     exec_queue_.insert({node->id, task});
   }
 
   if (task->src_device == task->dst_device) {
+    hit_count_++;
     return;
   }
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
+
+#if defined(PREFETCH_CTRL_FULL) || defined(PREFETCH_UNCTRL_PIPE)
+    for (int i = 0; i < NUM_PRIORITY; ++i) {
+      // if task in queue, then inc hit count
+      if (std::find(unified_queue_[i].begin(), unified_queue_[i].end(), task) !=
+          unified_queue_[i].end()) {
+        hit_count_++;
+      }
+    }
     unified_queue_[task->priority].push_back(task);
+#endif
+
+#if defined(PREFETCH_UNCTRL_FULL) || defined(PREFETCH_UNCTRL_OS)
+    zero_control_queue_.push_back(task);
+#endif
   }
 
   // ScheduleTask(request_id, task);
@@ -100,14 +129,122 @@ TaskPool::StopExec(const std::uint64_t& request_id, const NodePtr& node)
   /* Not Keeping any live parameters */
   {
     std::lock_guard<std::mutex> lock(mutex_);
+#if defined(PREFETCH_CTRL_FULL) || defined(PREFETCH_UNCTRL_PIPE)
     unified_queue_[task->priority].push_back(task);
+#endif
+
+#if defined(PREFETCH_UNCTRL_FULL) || defined(PREFETCH_UNCTRL_OS)
+    zero_control_queue_.push_back(task);
+#endif
   }
 
+  double hit_rate = hit_count_ / total_task_count_;
+  double unused_rate = unused_count_ / total_task_count_;
+  LOG_TRITON_INFO(
+      ("Total task count: " + std::to_string(total_task_count_) +
+       " Hit count: " + std::to_string(hit_count_) +
+       " Unused count: " + std::to_string(unused_count_) +
+       " Hit rate: " + std::to_string(hit_rate) +
+       " Unused rate: " + std::to_string(unused_rate))
+          .c_str());
   // ScheduleTask(request_id, task);
 }
 
-void TaskPool::ZeroControlThreadFunc() {
+void
+TaskPool::ZeroControlThreadFunc()
+{
+  while (true) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (zero_control_queue_.empty()) {
+      lock.unlock();
+      SKIP_TO_NEXT_ITERATION
+    }
 
+    // pop the task from the highest priority queue
+    TaskPtr task = zero_control_queue_.front();
+    auto node = task->node;
+    zero_control_queue_.pop_front();
+
+    lock.unlock();
+
+    LOG_TRITON_VERBOSE(("Verify task " + task->DebugString()).c_str());
+
+    if (ValidateTask(task) == false) {
+      node->mutex.unlock();
+      SKIP_TO_NEXT_ITERATION
+    }
+
+    if (task->dst_device != DISK_DEVICE) {
+      auto start_time = MCIROSECONDS_SINCE_EPOCH;
+      auto success = RemoveMemoryForNode(node, task->dst_device);
+      auto end_time = MCIROSECONDS_SINCE_EPOCH;
+      {
+        char buffer[2048];
+        memset(buffer, 0, 2048);
+        sprintf(
+            buffer, "ZeroControlThreadFunc: task: %s, evict time %ld us",
+            task->DebugString().c_str(), end_time - start_time);
+        LOG_TRITON_INFO(buffer);
+      }
+
+      if (!success) {
+        // insert the task back to the queue
+        node->mutex.unlock();
+        lock.lock();
+        zero_control_queue_.push_back(task);
+        LOG_TRITON_INFO(("Task: " + task->DebugString() +
+                         " evict failed, insert back to queue")
+                            .c_str());
+        lock.unlock();
+        SKIP_TO_NEXT_ITERATION
+      }
+    }
+
+    // start additional threads to execute the task
+    std::thread task_thread(&TaskPool::SetNodeDevice, this, std::ref(task));
+    SetThreadAffinity(task_thread);
+#ifdef PREFETCH_UNCTRL_OS
+    SetThreadScheduling(task_thread, SCHED_FIFO, task->priority + 1);
+#endif
+    task_thread.detach();
+  }
+}
+
+void
+TaskPool::ZeroControlPipeThreadFunc()
+{
+  while (true) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    std::uint32_t max_priority = 1000;
+    for (std::uint32_t i = 0; i < NUM_PRIORITY; ++i) {
+      if (!unified_queue_[i].empty()) {
+        max_priority = i;
+        break;
+      }
+    }
+
+    if (max_priority == 1000) {
+      lock.unlock();
+      SKIP_TO_NEXT_ITERATION
+    }
+
+    // pop the task from the highest priority queue
+    TaskPtr task = unified_queue_[max_priority].front();
+    auto node = task->node;
+    unified_queue_[max_priority].pop_front();
+
+    lock.unlock();
+
+    LOG_TRITON_VERBOSE(("Execute task " + task->DebugString()).c_str());
+
+    // start additional threads to execute the task
+    std::thread task_thread(&TaskPool::SetNodeDevice, this, std::ref(task));
+    SetThreadAffinity(task_thread);
+#ifdef PREFETCH_UNCTRL_OS
+    SetThreadScheduling(task_thread, SCHED_FIFO, task->priority + 1);
+#endif
+    task_thread.detach();
+  }
 }
 
 void
@@ -148,121 +285,11 @@ TaskPool::UnifiedThreadFunc()
     }
 
     lock.unlock();
-
-    // do not execute the rest if node memory move has conflict
-    node->mutex.lock();
-    std::stringstream ss;
-    ss << std::hex << node->id;
-
     LOG_TRITON_VERBOSE(("Verify task " + task->DebugString()).c_str());
 
-    // DISK->CPU
-    if (task->src_device == DISK_DEVICE && task->dst_device == CPU_DEVICE) {
-      if (node->device == DISK_DEVICE) {
-        kHostMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, CPU_DEVICE);
-      } else if (node->device.is_cuda()) {
-        LOG_TRITON_ERROR((ss.str() + " is on GPU, cannot move to CPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device == CPU_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " already on CPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else {
-        assert(false);
-      }
-    }
-
-    // DISK->GPU
-    if (task->src_device == DISK_DEVICE && task->dst_device.is_cuda()) {
-      if (node->device == DISK_DEVICE) {
-        kHostMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, CPU_DEVICE);
-        kDeviceMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, task->dst_device);
-      } else if (node->device.is_cuda()) {
-        LOG_TRITON_ERROR((ss.str() + " already on GPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device == CPU_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " is on CPU, move to GPU").c_str());
-        kDeviceMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, task->dst_device);
-      } else {
-        assert(false);
-      }
-    }
-
-    // CPU->GPU
-    if (task->src_device == CPU_DEVICE && task->dst_device.is_cuda()) {
-      if (node->device == DISK_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " is on DISK, move to GPU").c_str());
-        kHostMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, CPU_DEVICE);
-        kDeviceMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, task->dst_device);
-      } else if (node->device.is_cuda()) {
-        LOG_TRITON_ERROR((ss.str() + " already on GPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device == CPU_DEVICE) {
-        kDeviceMemoryPool->PreAllocateMemory(
-            node->id, node->byte_size, task->dst_device);
-      } else {
-        assert(false);
-      }
-    }
-
-    // CPU->DISK
-    if (task->src_device == CPU_DEVICE && task->dst_device == DISK_DEVICE) {
-      if (node->device == DISK_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " already on DISK").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device.is_cuda()) {
-        LOG_TRITON_ERROR(
-            (ss.str() + " is on GPU, cannot move to DISK").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device == CPU_DEVICE) {
-        // do nothing
-      } else {
-        assert(false);
-      }
-    }
-
-    // GPU->CPU
-    if (task->src_device.is_cuda() && task->dst_device == CPU_DEVICE) {
-      if (node->device == DISK_DEVICE) {
-        LOG_TRITON_ERROR(
-            (ss.str() + " is on DISK, cannot move to CPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device.is_cuda()) {
-        // do nothing
-      } else if (node->device == CPU_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " already on CPU").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else {
-        assert(false);
-      }
-    }
-
-    // GPU->DISK
-    if (task->src_device.is_cuda() && task->dst_device == DISK_DEVICE) {
-      if (node->device == DISK_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " already on DISK").c_str());
-        node->mutex.unlock();
-        SKIP_TO_NEXT_ITERATION
-      } else if (node->device.is_cuda()) {
-        // do nothing
-      } else if (node->device == CPU_DEVICE) {
-        LOG_TRITON_ERROR((ss.str() + " is on CPU, move to DISK").c_str());
-      } else {
-        assert(false);
-      }
+    if (ValidateTask(task) == false) {
+      node->mutex.unlock();
+      SKIP_TO_NEXT_ITERATION
     }
 
     if (task->dst_device != DISK_DEVICE) {
@@ -291,21 +318,142 @@ TaskPool::UnifiedThreadFunc()
       }
     }
 
-    {
-      auto start_time = MCIROSECONDS_SINCE_EPOCH;
-      node->SetDevice(task->dst_device);
-      auto end_time = MCIROSECONDS_SINCE_EPOCH;
-      {
-        char buffer[2048];
-        memset(buffer, 0, 2048);
-        sprintf(
-            buffer, "UnifiedThreadFunc: task: %s, emplace time %ld us",
-            task->DebugString().c_str(), end_time - start_time);
-        LOG_TRITON_INFO(buffer);
-      }
-    }
-    node->mutex.unlock();
+    if (task->dst_device.is_cuda())
+      total_task_count_++;
+    SetNodeDevice(task);
   }
+}
+
+bool
+TaskPool::ValidateTask(const TaskPtr& task)
+{
+  auto node = task->node;
+  std::stringstream ss;
+  ss << std::hex << node->id;
+
+  // do not execute the rest if node memory move has conflict
+  node->mutex.lock();
+
+  int defualt_numa_id = node->default_device.index() / 4;
+  auto default_cpu_device = Device(torch::kCPU, defualt_numa_id);
+
+  // DISK->CPU
+  if (task->src_device == DISK_DEVICE && task->dst_device == CPU_DEVICE) {
+    if (node->device == DISK_DEVICE) {
+      kHostMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, default_cpu_device);
+    } else if (node->device.is_cuda()) {
+      LOG_TRITON_ERROR((ss.str() + " is on GPU, cannot move to CPU").c_str());
+      return false;
+    } else if (node->device == CPU_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " already on CPU").c_str());
+      return false;
+    } else {
+      assert(false);
+    }
+  }
+
+  // DISK->GPU
+  if (task->src_device == DISK_DEVICE && task->dst_device.is_cuda()) {
+    if (node->device == DISK_DEVICE) {
+      kHostMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, default_cpu_device);
+      kDeviceMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, task->dst_device);
+    } else if (node->device.is_cuda()) {
+      LOG_TRITON_ERROR((ss.str() + " already on GPU").c_str());
+      return false;
+    } else if (node->device == CPU_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " is on CPU, move to GPU").c_str());
+      kDeviceMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, task->dst_device);
+    } else {
+      assert(false);
+    }
+  }
+
+  // CPU->GPU
+  if (task->src_device == CPU_DEVICE && task->dst_device.is_cuda()) {
+    if (node->device == DISK_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " is on DISK, move to GPU").c_str());
+      kHostMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, default_cpu_device);
+      kDeviceMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, task->dst_device);
+    } else if (node->device.is_cuda()) {
+      LOG_TRITON_ERROR((ss.str() + " already on GPU").c_str());
+      return false;
+    } else if (node->device == CPU_DEVICE) {
+      kDeviceMemoryPool->PreAllocateMemory(
+          node->id, node->byte_size, task->dst_device);
+    } else {
+      assert(false);
+    }
+  }
+
+  // CPU->DISK
+  if (task->src_device == CPU_DEVICE && task->dst_device == DISK_DEVICE) {
+    if (node->device == DISK_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " already on DISK").c_str());
+      return false;
+    } else if (node->device.is_cuda()) {
+      LOG_TRITON_ERROR((ss.str() + " is on GPU, cannot move to DISK").c_str());
+      return false;
+    } else if (node->device == CPU_DEVICE) {
+      // do nothing
+    } else {
+      assert(false);
+    }
+  }
+
+  // GPU->CPU
+  if (task->src_device.is_cuda() && task->dst_device == CPU_DEVICE) {
+    if (node->device == DISK_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " is on DISK, cannot move to CPU").c_str());
+      return false;
+    } else if (node->device.is_cuda()) {
+      // do nothing
+    } else if (node->device == CPU_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " already on CPU").c_str());
+      return false;
+    } else {
+      assert(false);
+    }
+  }
+
+  // GPU->DISK
+  if (task->src_device.is_cuda() && task->dst_device == DISK_DEVICE) {
+    if (node->device == DISK_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " already on DISK").c_str());
+      return false;
+    } else if (node->device.is_cuda()) {
+      // do nothing
+    } else if (node->device == CPU_DEVICE) {
+      LOG_TRITON_ERROR((ss.str() + " is on CPU, move to DISK").c_str());
+    } else {
+      assert(false);
+    }
+  }
+
+  return true;
+}
+
+void
+TaskPool::SetNodeDevice(const TaskPtr& task)
+{
+  auto node = task->node;
+  auto start_time = MCIROSECONDS_SINCE_EPOCH;
+  node->SetDevice(task->dst_device);
+  auto end_time = MCIROSECONDS_SINCE_EPOCH;
+  {
+    char buffer[2048];
+    memset(buffer, 0, 2048);
+    sprintf(
+        buffer, "SetNodeDevice: task: %s, emplace time %ld us",
+        task->DebugString().c_str(), end_time - start_time);
+    LOG_TRITON_INFO(buffer);
+  }
+  node->mutex.unlock();
 }
 
 void
@@ -480,7 +628,9 @@ TaskPool::Stride(const std::uint64_t& request_id, const NodePtr& node)
   }
 }
 
-void TaskPool::Count(const std::uint64_t& request_id, const NodePtr& node) {
+void
+TaskPool::Count(const std::uint64_t& request_id, const NodePtr& node)
+{
   int num_gpus = GetDeviceCount();
   for (int i = 0; i < num_gpus; i++) {
     std::int64_t gpu_size_limit = 1024 * 1024 * 1024 * 2LL;
@@ -575,6 +725,7 @@ TaskPool::Prefetch(const std::uint64_t& request_id, const NodePtr& node)
         std::lock_guard<std::mutex> lock(mutex_);
         unified_queue_[task->priority].push_back(task);
       }
+      total_task_count_++;
       // ScheduleTask(request_id, task);
     }
   }
@@ -617,6 +768,7 @@ TaskPool::RemoveMemoryForNode(const NodePtr& node, const Device& device)
     if (remove_node->mutex.try_lock()) {
       remove_node->SetDevice(DISK_DEVICE);
       remove_node->mutex.unlock();
+      unused_count_++;
     }
     remove_size -= remove_node->byte_size;
   }

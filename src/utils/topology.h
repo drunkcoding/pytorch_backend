@@ -28,6 +28,8 @@ struct MemoryInfo {
   std::int64_t size;
 };
 
+extern std::atomic_int32_t kGPUDeviceCount;
+
 struct Node {
   ScriptModule* model = nullptr;  // always use raw pointer, since we need
                                   // to manage the memory by ourselves
